@@ -1,5 +1,5 @@
 """
-十大交易人和特定法人持倉資料爬蟲模組
+選擇權持倉資料爬蟲模組
 """
 import logging
 import requests
@@ -10,19 +10,19 @@ from .utils import get_tw_stock_date, safe_int, get_html_content
 # 設定日誌
 logger = logging.getLogger(__name__)
 
-def get_top_traders_data():
+def get_option_positions_data():
     """
-    獲取十大交易人和特定法人持倉資料
+    獲取選擇權持倉資料
     
     Returns:
-        dict: 包含十大交易人和特定法人持倉資料的字典
+        dict: 包含選擇權持倉資料的字典
     """
     try:
         # 取得日期
         date = get_tw_stock_date('%Y%m%d')
         
         # 使用改進的URL格式
-        url = "https://www.taifex.com.tw/cht/3/largeTraderFutQry"
+        url = "https://www.taifex.com.tw/cht/3/largeTraderOptQry"
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -35,7 +35,7 @@ def get_top_traders_data():
             'doQuery': '1',
             'dateaddcnt': '',
             'queryDate': date[:4] + '/' + date[4:6] + '/' + date[6:],  # 格式化日期為YYYY/MM/DD
-            'commodityId': 'TXF'  # 台指期貨
+            'commodityId': 'TXO'  # 台指選擇權
         }
         
         # 獲取HTML內容
@@ -44,48 +44,48 @@ def get_top_traders_data():
         if not soup:
             # 嘗試獲取前一個交易日的數據
             yesterday = (datetime.strptime(date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-            logger.warning(f"無法獲取 {date} 的十大交易人資料，嘗試獲取 {yesterday} 的數據")
-            return get_top_traders_data_by_date(yesterday)
+            logger.warning(f"無法獲取 {date} 的選擇權持倉資料，嘗試獲取 {yesterday} 的數據")
+            return get_option_positions_data_by_date(yesterday)
         
         # 獲取今日數據
-        today_data = extract_top_traders_data(soup, date)
+        today_data = extract_option_positions_data(soup, date)
         
         # 獲取昨日數據，用於計算變化
         yesterday = (datetime.strptime(date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-        yesterday_data = get_top_traders_data_by_date(yesterday)
+        yesterday_data = get_option_positions_data_by_date(yesterday)
         
         # 計算變化
-        today_top10_traders_net = today_data.get('top10_traders_net', 0)
-        yesterday_top10_traders_net = yesterday_data.get('top10_traders_net', 0) if yesterday_data else 0
-        top10_traders_net_change = today_top10_traders_net - yesterday_top10_traders_net
+        today_foreign_call_net = today_data.get('foreign_call_net', 0)
+        yesterday_foreign_call_net = yesterday_data.get('foreign_call_net', 0) if yesterday_data else 0
+        foreign_call_net_change = today_foreign_call_net - yesterday_foreign_call_net
         
-        today_top10_specific_net = today_data.get('top10_specific_net', 0)
-        yesterday_top10_specific_net = yesterday_data.get('top10_specific_net', 0) if yesterday_data else 0
-        top10_specific_net_change = today_top10_specific_net - yesterday_top10_specific_net
+        today_foreign_put_net = today_data.get('foreign_put_net', 0)
+        yesterday_foreign_put_net = yesterday_data.get('foreign_put_net', 0) if yesterday_data else 0
+        foreign_put_net_change = today_foreign_put_net - yesterday_foreign_put_net
         
         # 更新變化值
-        today_data['top10_traders_net_change'] = top10_traders_net_change
-        today_data['top10_specific_net_change'] = top10_specific_net_change
+        today_data['foreign_call_net_change'] = foreign_call_net_change
+        today_data['foreign_put_net_change'] = foreign_put_net_change
         
         return today_data
     
     except Exception as e:
-        logger.error(f"獲取十大交易人資料時出錯: {str(e)}")
-        return default_top_traders_data()
+        logger.error(f"獲取選擇權持倉資料時出錯: {str(e)}")
+        return default_option_positions_data()
 
-def get_top_traders_data_by_date(date):
+def get_option_positions_data_by_date(date):
     """
-    獲取特定日期的十大交易人和特定法人持倉資料
+    獲取特定日期的選擇權持倉資料
     
     Args:
         date: 日期字符串，格式為YYYYMMDD
         
     Returns:
-        dict: 包含十大交易人和特定法人持倉資料的字典
+        dict: 包含選擇權持倉資料的字典
     """
     try:
         # 使用URL
-        url = "https://www.taifex.com.tw/cht/3/largeTraderFutQry"
+        url = "https://www.taifex.com.tw/cht/3/largeTraderOptQry"
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -98,110 +98,118 @@ def get_top_traders_data_by_date(date):
             'doQuery': '1',
             'dateaddcnt': '',
             'queryDate': date[:4] + '/' + date[4:6] + '/' + date[6:],  # 格式化日期為YYYY/MM/DD
-            'commodityId': 'TXF'  # 台指期貨
+            'commodityId': 'TXO'  # 台指選擇權
         }
         
         # 獲取HTML內容
         soup = get_html_content(url, headers=headers, method='POST', data=data)
         
         if not soup:
-            logger.error(f"無法獲取 {date} 的十大交易人資料")
-            return default_top_traders_data()
+            logger.error(f"無法獲取 {date} 的選擇權持倉資料")
+            return default_option_positions_data()
         
-        return extract_top_traders_data(soup, date)
+        return extract_option_positions_data(soup, date)
     
     except Exception as e:
-        logger.error(f"獲取 {date} 的十大交易人資料時出錯: {str(e)}")
-        return default_top_traders_data()
+        logger.error(f"獲取 {date} 的選擇權持倉資料時出錯: {str(e)}")
+        return default_option_positions_data()
 
-def extract_top_traders_data(soup, date):
+def extract_option_positions_data(soup, date):
     """
-    從HTML內容中提取十大交易人和特定法人持倉資料
+    從HTML內容中提取選擇權持倉資料
     
     Args:
         soup: BeautifulSoup對象
         date: 日期字符串，格式為YYYYMMDD
         
     Returns:
-        dict: 包含十大交易人和特定法人持倉資料的字典
+        dict: 包含選擇權持倉資料的字典
     """
     try:
         # 初始化結果
         result = {
             'date': date,
-            'top10_traders_buy': 0,
-            'top10_traders_sell': 0,
-            'top10_traders_net': 0,
-            'top10_specific_buy': 0,
-            'top10_specific_sell': 0,
-            'top10_specific_net': 0,
-            'top10_traders_net_change': 0,
-            'top10_specific_net_change': 0
+            'foreign_call_buy': 0,
+            'foreign_call_sell': 0,
+            'foreign_call_net': 0,
+            'foreign_put_buy': 0,
+            'foreign_put_sell': 0,
+            'foreign_put_net': 0,
+            'foreign_call_net_change': 0,
+            'foreign_put_net_change': 0
         }
         
         # 查找表格
         tables = soup.find_all('table', class_='table_f')
-        if not tables or len(tables) < 1:
-            logger.error("找不到十大交易人表格")
+        if not tables or len(tables) < 2:
+            logger.error("找不到選擇權持倉表格")
             return result
         
-        # 第一個表格通常是十大交易人資料
-        table = tables[0]
-        rows = table.find_all('tr')
-        
-        # 遍歷每一行，尋找所需資料
-        for row in rows:
-            cells = row.find_all('td')
-            if len(cells) < 6:
+        # 提取買權(Call)和賣權(Put)資料
+        for i, table in enumerate(tables):
+            rows = table.find_all('tr')
+            
+            # 檢查是否為買權(Call)或賣權(Put)表格
+            header_row = rows[0] if rows else None
+            if not header_row:
                 continue
             
-            # 十大交易人多方(buy)部位
-            if '十大交易人-多方' in cells[0].text:
+            header_text = header_row.text.strip().lower()
+            is_call_table = 'call' in header_text
+            is_put_table = 'put' in header_text
+            
+            if not (is_call_table or is_put_table):
+                continue
+            
+            # 遍歷每一行，尋找外資資料
+            for row in rows:
+                cells = row.find_all('td')
+                if len(cells) < 6:
+                    continue
+                
+                # 檢查是否為外資資料行
+                first_cell_text = cells[0].text.strip()
+                if '外資' not in first_cell_text and 'foreign' not in first_cell_text.lower():
+                    continue
+                
+                # 提取買方、賣方部位
                 buy_position = safe_int(cells[2].text.strip().replace(',', ''))
-                result['top10_traders_buy'] = buy_position
-            
-            # 十大交易人空方(sell)部位
-            elif '十大交易人-空方' in cells[0].text:
-                sell_position = safe_int(cells[2].text.strip().replace(',', ''))
-                result['top10_traders_sell'] = sell_position
-            
-            # 十大特定法人多方(buy)部位
-            elif '十大特定法人-多方' in cells[0].text:
-                buy_position = safe_int(cells[2].text.strip().replace(',', ''))
-                result['top10_specific_buy'] = buy_position
-            
-            # 十大特定法人空方(sell)部位
-            elif '十大特定法人-空方' in cells[0].text:
-                sell_position = safe_int(cells[2].text.strip().replace(',', ''))
-                result['top10_specific_sell'] = sell_position
+                sell_position = safe_int(cells[5].text.strip().replace(',', ''))
+                net_position = buy_position - sell_position
+                
+                # 儲存資料
+                if is_call_table:
+                    result['foreign_call_buy'] = buy_position
+                    result['foreign_call_sell'] = sell_position
+                    result['foreign_call_net'] = net_position
+                elif is_put_table:
+                    result['foreign_put_buy'] = buy_position
+                    result['foreign_put_sell'] = sell_position
+                    result['foreign_put_net'] = net_position
         
-        # 計算淨部位
-        result['top10_traders_net'] = result['top10_traders_buy'] - result['top10_traders_sell']
-        result['top10_specific_net'] = result['top10_specific_buy'] - result['top10_specific_sell']
-        
-        logger.info(f"十大交易人淨部位: {result['top10_traders_net']}, 十大特定法人淨部位: {result['top10_specific_net']}")
+        logger.info(f"外資買權淨部位: {result['foreign_call_net']}, 外資賣權淨部位: {result['foreign_put_net']}")
         
         return result
     
     except Exception as e:
-        logger.error(f"解析十大交易人資料時出錯: {str(e)}")
-        return default_top_traders_data()
+        logger.error(f"解析選擇權持倉資料時出錯: {str(e)}")
+        return default_option_positions_data()
 
-def default_top_traders_data():
-    """返回默認的十大交易人和特定法人持倉資料"""
+def default_option_positions_data():
+    """返回默認的選擇權持倉資料"""
     return {
         'date': get_tw_stock_date('%Y%m%d'),
-        'top10_traders_buy': 0,
-        'top10_traders_sell': 0,
-        'top10_traders_net': 0,
-        'top10_specific_buy': 0,
-        'top10_specific_sell': 0,
-        'top10_specific_net': 0,
-        'top10_traders_net_change': 0,
-        'top10_specific_net_change': 0
+        'foreign_call_buy': 0,
+        'foreign_call_sell': 0,
+        'foreign_call_net': 0,
+        'foreign_put_buy': 0,
+        'foreign_put_sell': 0,
+        'foreign_put_net': 0,
+        'foreign_call_net_change': 0,
+        'foreign_put_net_change': 0
     }
 
 # 主程序測試
 if __name__ == "__main__":
-    result = get_top_traders_data()
+    result = get_option_positions_data()
     print(result)
