@@ -3,7 +3,7 @@ MongoDB 資料庫連接和操作模組
 """
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import pymongo
 from pymongo import MongoClient
@@ -34,7 +34,7 @@ def get_db():
     取得資料庫連接，如果尚未連接則建立連接
     
     Returns:
-        MongoDB 資料庫實例
+        MongoDB 資料庫實例或 None
     """
     global client, db
     
@@ -45,22 +45,39 @@ def get_db():
                 logger.error("未設定 MONGODB_URI 環境變數")
                 return None
             
-            client = MongoClient(MONGODB_URI)
+            # 使用安全的連接選項
+            client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=5000,
+                ssl=True,
+                retryWrites=True,
+                w="majority"
+            )
+            
+            # 測試連接有效性
+            client.admin.command('ping')
+            
             db = client[DB_NAME]
             
             # 建立必要的索引
             _setup_indexes()
             
             logger.info(f"已成功連接到 MongoDB 資料庫: {DB_NAME}")
+            return db
         except Exception as e:
             logger.error(f"連接 MongoDB 時發生錯誤: {str(e)}")
             db = None
+            return None
     
     return db
 
 def _setup_indexes():
     """設定資料庫索引"""
     try:
+        if db is None:
+            logger.warning("資料庫連接不可用，無法設定索引")
+            return
+            
         # market_reports 集合索引
         db[MARKET_REPORTS_COLLECTION].create_index([("date", pymongo.ASCENDING)], unique=True)
         db[MARKET_REPORTS_COLLECTION].create_index([("created_at", pymongo.DESCENDING)])
@@ -95,11 +112,12 @@ def save_market_report(report_data):
         report_data: 市場報告資料字典
         
     Returns:
-        ObjectId: 儲存的文檔ID
+        ObjectId: 儲存的文檔ID 或 None
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法儲存市場報告")
             return None
         
         # 轉換日期格式
@@ -188,20 +206,20 @@ def save_market_report(report_data):
         }
         
         # 使用 upsert 操作，如果今日資料已存在則更新，否則新增
-        result = db[MARKET_REPORTS_COLLECTION].update_one(
+        result = current_db[MARKET_REPORTS_COLLECTION].update_one(
             {"date": date_obj},
             {"$set": document},
             upsert=True
         )
         
-        if result.upserted_id:
+        if result.upserted_id is not None:
             logger.info(f"已新增市場報告: {date_string}")
             return result.upserted_id
         else:
             logger.info(f"已更新市場報告: {date_string}")
             # 查詢並返回文檔 ID
-            doc = db[MARKET_REPORTS_COLLECTION].find_one({"date": date_obj})
-            return doc.get('_id') if doc else None
+            doc = current_db[MARKET_REPORTS_COLLECTION].find_one({"date": date_obj})
+            return doc.get('_id') if doc is not None else None
     
     except Exception as e:
         logger.error(f"儲存市場報告時發生錯誤: {str(e)}")
@@ -215,12 +233,13 @@ def get_latest_market_report():
         dict: 市場報告資料字典，如果沒有找到則返回 None
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法獲取最新市場報告")
             return None
         
         # 按建立時間降序排序，獲取第一筆資料
-        report = db[MARKET_REPORTS_COLLECTION].find_one(
+        report = current_db[MARKET_REPORTS_COLLECTION].find_one(
             sort=[("created_at", pymongo.DESCENDING)]
         )
         
@@ -241,15 +260,16 @@ def get_market_report_by_date(date_str):
         dict: 市場報告資料字典，如果沒有找到則返回 None
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法按日期獲取市場報告")
             return None
         
         # 轉換日期格式
         date_obj = datetime.strptime(date_str, '%Y%m%d')
         
         # 查詢報告
-        report = db[MARKET_REPORTS_COLLECTION].find_one({"date": date_obj})
+        report = current_db[MARKET_REPORTS_COLLECTION].find_one({"date": date_obj})
         
         return report
     
@@ -262,22 +282,23 @@ def update_consecutive_days():
     更新三大法人連續買賣超天數
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法更新連續買賣超天數")
             return
         
         # 獲取最新報告
         latest_report = get_latest_market_report()
-        if not latest_report:
+        if latest_report is None:
             logger.warning("找不到最新報告，無法更新連續買賣超天數")
             return
         
         # 獲取昨日報告
         yesterday = (latest_report['date'] - timedelta(days=1))
-        yesterday_report = db[MARKET_REPORTS_COLLECTION].find_one({"date": yesterday})
+        yesterday_report = current_db[MARKET_REPORTS_COLLECTION].find_one({"date": yesterday})
         
         # 計算各法人連續買賣超天數
-        if yesterday_report:
+        if yesterday_report is not None:
             # 外資
             if (latest_report['institutional']['foreign'] > 0 and 
                 yesterday_report['institutional']['foreign_consecutive_days'] > 0):
@@ -314,7 +335,7 @@ def update_consecutive_days():
             dealer_days = 1 if latest_report['institutional']['dealer'] > 0 else -1
         
         # 更新最新報告
-        db[MARKET_REPORTS_COLLECTION].update_one(
+        current_db[MARKET_REPORTS_COLLECTION].update_one(
             {"_id": latest_report['_id']},
             {"$set": {
                 "institutional.foreign_consecutive_days": foreign_days,
@@ -337,13 +358,14 @@ def mark_report_as_pushed(report_id):
         report_id: 報告ID
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法標記報告已推送")
             return
         
         now = datetime.now(TW_TIMEZONE)
         
-        db[MARKET_REPORTS_COLLECTION].update_one(
+        current_db[MARKET_REPORTS_COLLECTION].update_one(
             {"_id": ObjectId(report_id)},
             {"$set": {
                 "is_pushed": True,
@@ -370,8 +392,9 @@ def save_push_log(target_type, target_id, report_date, status, message_type, err
         error_message: 錯誤訊息 (僅在失敗時適用)
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法儲存推送日誌")
             return
         
         now = datetime.now(TW_TIMEZONE)
@@ -386,7 +409,7 @@ def save_push_log(target_type, target_id, report_date, status, message_type, err
             "error_message": error_message
         }
         
-        db[PUSH_LOGS_COLLECTION].insert_one(document)
+        current_db[PUSH_LOGS_COLLECTION].insert_one(document)
         
         logger.info(f"已儲存推送日誌: {target_type} {target_id}, 狀態={status}")
     
@@ -401,11 +424,12 @@ def get_groups_for_push():
         list: 群組列表
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法獲取需要推送的群組")
             return []
         
-        groups = list(db[GROUPS_COLLECTION].find({
+        groups = list(current_db[GROUPS_COLLECTION].find({
             "status": "active",
             "auto_push": True
         }))
@@ -425,13 +449,14 @@ def save_user_info(line_user_id, display_name):
         display_name: 顯示名稱
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法儲存用戶信息")
             return
         
         now = datetime.now(TW_TIMEZONE)
         
-        db[USERS_COLLECTION].update_one(
+        current_db[USERS_COLLECTION].update_one(
             {"line_user_id": line_user_id},
             {"$set": {
                 "display_name": display_name,
@@ -463,8 +488,9 @@ def save_group_info(line_group_id, group_name=None):
         group_name: 群組名稱
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法儲存群組信息")
             return
         
         now = datetime.now(TW_TIMEZONE)
@@ -482,10 +508,10 @@ def save_group_info(line_group_id, group_name=None):
             }
         }
         
-        if group_name:
+        if group_name is not None:
             update["$set"]["group_name"] = group_name
         
-        db[GROUPS_COLLECTION].update_one(
+        current_db[GROUPS_COLLECTION].update_one(
             {"line_group_id": line_group_id},
             update,
             upsert=True
@@ -507,11 +533,12 @@ def is_user_authorized(line_user_id):
         bool: 是否已授權
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法檢查用戶授權")
             return False
         
-        user = db[USERS_COLLECTION].find_one({
+        user = current_db[USERS_COLLECTION].find_one({
             "line_user_id": line_user_id,
             "status": "active"
         })
@@ -533,11 +560,12 @@ def is_group_authorized(line_group_id):
         bool: 是否已授權
     """
     try:
-        db = get_db()
-        if not db:
+        current_db = get_db()
+        if current_db is None:
+            logger.error("資料庫連接不可用，無法檢查群組授權")
             return False
         
-        group = db[GROUPS_COLLECTION].find_one({
+        group = current_db[GROUPS_COLLECTION].find_one({
             "line_group_id": line_group_id,
             "status": "active"
         })
