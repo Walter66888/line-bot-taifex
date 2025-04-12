@@ -1,5 +1,5 @@
 """
-市場數據爬取和推送排程模組 - 第三次修改版
+市場數據爬取和推送排程模組 - 修改版
 """
 import os
 import logging
@@ -16,15 +16,11 @@ from crawler.taiex import get_taiex_data
 # from crawler.futures import get_futures_data
 # 新增引入三大法人期貨持倉模組
 from crawler.institutional_futures import get_institutional_futures_data
-# 新增引入選擇權持倉模組
-from crawler.option_positions import get_option_positions_data
-# 新增引入十大交易人持倉模組
-from crawler.top_traders import get_top_traders_data
 from crawler.institutional import get_institutional_investors_data
 from crawler.pc_ratio import get_pc_ratio
 from crawler.vix import get_vix_data
-# 移除原本的十大交易人模組引入
-# from crawler.top_traders import get_top_traders_data
+from crawler.top_traders import get_top_traders_data
+from crawler.option_positions import get_option_positions_data
 from database.mongodb import (
     save_market_report, 
     update_consecutive_days, 
@@ -67,17 +63,17 @@ def fetch_market_data():
         vix_data = get_vix_data()
         logger.info(f"獲取VIX指標數據: {vix_data}")
         
-        # 新增：獲取三大法人期貨持倉數據
-        institutional_futures_data = get_institutional_futures_data()
-        logger.info(f"獲取三大法人期貨持倉數據: {institutional_futures_data}")
+        # 獲取十大交易人和特定法人持倉數據
+        top_traders_data = get_top_traders_data()
+        logger.info(f"獲取十大交易人數據: {top_traders_data}")
         
-        # 新增：獲取選擇權持倉數據
+        # 獲取選擇權持倉數據
         option_positions_data = get_option_positions_data()
         logger.info(f"獲取選擇權持倉數據: {option_positions_data}")
         
-        # 新增：獲取十大交易人持倉數據
-        top_traders_data = get_top_traders_data()
-        logger.info(f"獲取十大交易人數據: {top_traders_data}")
+        # 新增：獲取三大法人期貨持倉數據
+        institutional_futures_data = get_institutional_futures_data()
+        logger.info(f"獲取三大法人期貨持倉數據: {institutional_futures_data}")
         
         # 計算散戶指標
         # 修改為使用新的三大法人期貨持倉數據
@@ -97,7 +93,7 @@ def fetch_market_data():
         yesterday_vix = 0.0  # 需要從資料庫獲取
         
         # 整合所有數據
-        # 使用新的模組化爬蟲獲取的數據
+        # 使用新的三大法人期貨持倉數據
         current_date = datetime.now(TW_TIMEZONE).strftime('%Y%m%d')
         market_data = {
             'date': institutional_data.get('date', current_date),
@@ -127,13 +123,13 @@ def fetch_market_data():
                 'foreign_mtx_net': institutional_futures_data.get('foreign_mtx_net', 0),
                 'foreign_mtx_net_change': 0,  # 需要從資料庫計算變化
                 'foreign_call_net': option_positions_data.get('foreign_call_net', 0),
-                'foreign_call_net_change': 0,  # 需要從資料庫計算變化
+                'foreign_call_net_change': option_positions_data.get('foreign_call_net_change', 0),
                 'foreign_put_net': option_positions_data.get('foreign_put_net', 0),
-                'foreign_put_net_change': 0,  # 需要從資料庫計算變化
+                'foreign_put_net_change': option_positions_data.get('foreign_put_net_change', 0),
                 'top10_traders_net': top_traders_data.get('top10_traders_net', 0),
-                'top10_traders_net_change': 0,  # 需要從資料庫計算變化
+                'top10_traders_net_change': top_traders_data.get('top10_traders_net_change', 0),
                 'top10_specific_net': top_traders_data.get('top10_specific_net', 0),
-                'top10_specific_net_change': 0  # 需要從資料庫計算變化
+                'top10_specific_net_change': top_traders_data.get('top10_specific_net_change', 0)
             },
             'retail_positions': {
                 'mtx_net': -mtx_institutional_net,
