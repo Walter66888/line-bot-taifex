@@ -60,22 +60,13 @@ def fetch_market_data():
         vix_data = get_vix_data()
         logger.info(f"獲取VIX指標數據: {vix_data}")
         
-        # 暫時使用默認值替代缺少的模組
-        top_traders_data = {
-            'top10_traders_net': 0,
-            'top10_traders_net_change': 0,
-            'top10_specific_net': 0,
-            'top10_specific_net_change': 0
-        }
-        logger.info(f"使用默認值替代十大交易人數據: {top_traders_data}")
+        # 獲取十大交易人和特定法人持倉數據
+        top_traders_data = get_top_traders_data()
+        logger.info(f"獲取十大交易人數據: {top_traders_data}")
         
-        option_positions_data = {
-            'foreign_call_net': 0,
-            'foreign_call_net_change': 0,
-            'foreign_put_net': 0,
-            'foreign_put_net_change': 0
-        }
-        logger.info(f"使用默認值替代選擇權持倉數據: {option_positions_data}")
+        # 獲取選擇權持倉數據
+        option_positions_data = get_option_positions_data()
+        logger.info(f"獲取選擇權持倉數據: {option_positions_data}")
         
         # 計算散戶指標
         mtx_institutional_net = futures_data.get('mtx_dealer_net', 0) + futures_data.get('mtx_it_net', 0) + futures_data.get('mtx_foreign_net', 0)
@@ -161,3 +152,152 @@ def fetch_market_data():
     except Exception as e:
         logger.error(f"獲取市場數據時發生錯誤: {str(e)}")
         return None
+
+def push_market_report(line_bot_api, report_id):
+    """
+    推送市場報告到已設定的 LINE 群組
+    
+    Args:
+        line_bot_api: LINE Bot API 實例
+        report_id: 報告ID
+    """
+    try:
+        # 獲取需要推送的群組
+        groups = get_groups_for_push()
+        if not groups:
+            logger.info("沒有需要推送的群組")
+            return
+        
+        # 生成市場報告
+        report_text = generate_market_report(report_id)
+        if not report_text:
+            logger.error("生成市場報告失敗")
+            return
+        
+        # 將報告推送到每個群組
+        for group in groups:
+            try:
+                line_group_id = group.get('line_group_id')
+                if line_group_id:
+                    logger.info(f"推送市場報告到群組: {line_group_id}")
+                    line_bot_api.push_message(
+                        line_group_id,
+                        TextSendMessage(text=report_text)
+                    )
+                    # 記錄推送成功
+                    save_push_log(
+                        target_type='group',
+                        target_id=line_group_id,
+                        report_date=datetime.now(TW_TIMEZONE).date(),
+                        status='success',
+                        message_type='full_report'
+                    )
+            except Exception as e:
+                logger.error(f"推送到群組 {line_group_id} 時發生錯誤: {str(e)}")
+                # 記錄推送失敗
+                save_push_log(
+                    target_type='group',
+                    target_id=line_group_id,
+                    report_date=datetime.now(TW_TIMEZONE).date(),
+                    status='failure',
+                    message_type='full_report',
+                    error_message=str(e)
+                )
+        
+        # 標記報告已推送
+        mark_report_as_pushed(report_id)
+        logger.info("市場報告推送完成")
+        
+    except Exception as e:
+        logger.error(f"推送市場報告時發生錯誤: {str(e)}")
+
+def schedule_market_data_job(line_bot_api):
+    """
+    排程市場數據任務
+    
+    Args:
+        line_bot_api: LINE Bot API 實例
+    """
+    # 從環境變數獲取基礎時間和隨機延遲範圍
+    base_time = os.environ.get('FETCH_BASE_TIME', '14:50')
+    min_delay = int(os.environ.get('MIN_RANDOM_DELAY', '1'))
+    max_delay = int(os.environ.get('MAX_RANDOM_DELAY', '3'))
+    
+    # 生成隨機延遲（min_delay-max_delay分鐘）
+    random_minutes = random.randint(min_delay, max_delay)
+    random_seconds = random.randint(0, 59)
+    
+    # 記錄設定
+    logger.info(f"排程設定：基礎時間 {base_time}，隨機延遲 {random_minutes}分{random_seconds}秒")
+    
+    # 設定爬取時間（基礎時間 + 隨機延遲）
+    schedule.every().day.at(base_time).do(
+        lambda: delayed_fetch_and_push(line_bot_api, minutes=random_minutes, seconds=random_seconds)
+    )
+    
+    # 晚上清除過期的快取數據
+    schedule.every().day.at("23:30").do(clean_cache)
+    
+    logger.info(f"已排程市場數據任務，爬取時間：{base_time} + {random_minutes}分{random_seconds}秒")
+
+def delayed_fetch_and_push(line_bot_api, minutes=0, seconds=0):
+    """
+    延遲後爬取並推送市場數據
+    
+    Args:
+        line_bot_api: LINE Bot API 實例
+        minutes: 延遲分鐘數
+        seconds: 延遲秒數
+    """
+    def _task():
+        logger.info(f"等待 {minutes}分{seconds}秒 後爬取市場數據...")
+        time.sleep(minutes * 60 + seconds)
+        
+        # 檢查今天是否是交易日
+        now = datetime.now(TW_TIMEZONE)
+        if now.weekday() >= 5:  # 週末不爬取
+            logger.info("今天是週末，不爬取市場數據")
+            return
+        
+        # 爬取市場數據
+        report_id = fetch_market_data()
+        if report_id:
+            # 推送市場報告
+            push_market_report(line_bot_api, report_id)
+    
+    # 在新執行緒中執行任務
+    thread = threading.Thread(target=_task)
+    thread.daemon = True
+    thread.start()
+
+def clean_cache():
+    """清除過期的快取數據"""
+    logger.info("清除過期的快取數據")
+    # 在這裡實現清除快取的邏輯
+
+def run_scheduler(line_bot_api):
+    """
+    運行排程器
+    
+    Args:
+        line_bot_api: LINE Bot API 實例
+    """
+    # 設定排程任務
+    schedule_market_data_job(line_bot_api)
+    
+    # 運行排程器
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+def start_scheduler_thread(line_bot_api):
+    """
+    在獨立執行緒中啟動排程器
+    
+    Args:
+        line_bot_api: LINE Bot API 實例
+    """
+    scheduler_thread = threading.Thread(target=run_scheduler, args=(line_bot_api,))
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
+    logger.info("已在背景執行緒啟動排程器")
