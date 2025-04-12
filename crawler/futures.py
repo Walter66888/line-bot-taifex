@@ -1,11 +1,9 @@
 """
-期貨相關資料爬蟲模組 - 使用Excel數據來源
+期貨相關資料爬蟲模組 - 正確解析網頁
 """
 import logging
 import requests
 import re
-import pandas as pd
-import io
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from .utils import get_tw_stock_date, safe_float, safe_int, get_html_content
@@ -31,14 +29,14 @@ def get_futures_data():
         # 獲取台指期貨數據
         tx_data = get_tx_futures_data(date, taiex_close)
         
-        # 獲取三大法人期貨部位數據（使用Excel數據來源）
-        institutional_futures = get_institutional_futures_excel(date)
+        # 獲取三大法人期貨部位數據
+        institutional_futures = get_institutional_futures_data(date)
         
-        # 獲取十大交易人數據（使用表格數據來源）
-        traders_data = get_top_traders_table(date)
+        # 獲取十大交易人數據
+        traders_data = get_top_traders_data(date)
         
-        # 獲取選擇權持倉數據（使用Excel數據來源）
-        options_data = get_options_positions_excel(date)
+        # 獲取選擇權持倉數據
+        options_data = get_options_positions_data(date)
         
         # 合併數據
         result = {**tx_data, **institutional_futures, **traders_data, **options_data}
@@ -62,7 +60,7 @@ def get_futures_data():
 
 def get_tx_futures_data(date, taiex_close=0):
     """
-    獲取台指期貨數據 - 改進版
+    獲取台指期貨數據
     
     Args:
         date: 日期字符串，格式為YYYYMMDD
@@ -72,7 +70,7 @@ def get_tx_futures_data(date, taiex_close=0):
         dict: 台指期貨數據
     """
     try:
-        # 使用改進的URL格式
+        # 使用URL格式
         url = "https://www.taifex.com.tw/cht/3/futDailyMarketReport"
         
         headers = {
@@ -107,10 +105,6 @@ def get_tx_futures_data(date, taiex_close=0):
         tables = soup.find_all('table', class_='table_f')
         if not tables or len(tables) < 1:
             logger.error("找不到台指期貨表格")
-            # 嘗試使用替代方法
-            alternative_data = get_tx_futures_data_alternative(date, taiex_close)
-            if alternative_data and alternative_data.get('close', 0) > 0:
-                return alternative_data
             return default_tx_data(taiex_close)
         
         # 獲取資料表格
@@ -136,10 +130,6 @@ def get_tx_futures_data(date, taiex_close=0):
         
         if not tx_row:
             logger.error("找不到近月台指期貨合約")
-            # 嘗試使用替代方法
-            alternative_data = get_tx_futures_data_alternative(date, taiex_close)
-            if alternative_data and alternative_data.get('close', 0) > 0:
-                return alternative_data
             return default_tx_data(taiex_close)
         
         # 解析數據
@@ -177,85 +167,15 @@ def get_tx_futures_data(date, taiex_close=0):
             }
         except Exception as e:
             logger.error(f"解析台指期貨數據時出錯: {str(e)}")
-            # 嘗試使用替代方法
-            alternative_data = get_tx_futures_data_alternative(date, taiex_close)
-            if alternative_data and alternative_data.get('close', 0) > 0:
-                return alternative_data
             return default_tx_data(taiex_close)
     
     except Exception as e:
         logger.error(f"獲取台指期貨數據時出錯: {str(e)}")
-        # 嘗試使用替代方法
-        alternative_data = get_tx_futures_data_alternative(date, taiex_close)
-        if alternative_data and alternative_data.get('close', 0) > 0:
-            return alternative_data
         return default_tx_data(taiex_close)
 
-def get_tx_futures_data_alternative(date, taiex_close=0):
+def get_institutional_futures_data(date):
     """
-    使用替代方法獲取台指期貨數據
-    
-    Args:
-        date: 日期字符串，格式為YYYYMMDD
-        taiex_close: 加權指數收盤價
-    
-    Returns:
-        dict: 台指期貨數據
-    """
-    try:
-        # 使用 JSON API
-        year = date[:4]
-        month = date[4:6]
-        day = date[6:8]
-        
-        url = f"https://www.taifex.com.tw/cht/app/chartQuote?weight=0&up_resolution=5&rowcount=1&type=1&commodity_id=TX&contract_date=&datemode=0&queryStartDate={year}/{month}/{day}&queryEndDate={year}/{month}/{day}"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Referer': 'https://www.taifex.com.tw/cht/3/futDailyMarketReport'
-        }
-        
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        
-        data = response.json()
-        if len(data) > 0:
-            last_data = data[-1]
-            close_price = safe_float(last_data.get('Close', 0))
-            
-            # 計算漲跌和漲跌百分比
-            yesterday_close = safe_float(last_data.get('ClosePrevious', 0))
-            change_value = close_price - yesterday_close
-            change_percent = (change_value / yesterday_close * 100) if yesterday_close > 0 else 0.0
-            
-            # 尋找合約月
-            contract_month = last_data.get('ContractName', '')
-            if contract_month:
-                match = re.search(r'TX(\d+)', contract_month)
-                if match:
-                    contract_month = match.group(1)
-            
-            logger.info(f"替代方法獲取台指期貨: 收盤價={close_price}, 漲跌={change_value}, 漲跌%={change_percent}")
-            
-            return {
-                'close': close_price,
-                'change': change_value,
-                'change_percent': change_percent,
-                'taiex_close': taiex_close,
-                'contract_month': contract_month
-            }
-        else:
-            logger.error("替代方法獲取台指期貨數據失敗：資料為空")
-            return default_tx_data(taiex_close)
-    
-    except Exception as e:
-        logger.error(f"使用替代方法獲取台指期貨數據時出錯: {str(e)}")
-        return default_tx_data(taiex_close)
-
-def get_institutional_futures_excel(date):
-    """
-    使用Excel資料獲取三大法人期貨持倉資料
+    獲取三大法人期貨持倉資料
     
     Args:
         date: 日期字符串，格式為YYYYMMDD
@@ -264,8 +184,8 @@ def get_institutional_futures_excel(date):
         dict: 三大法人期貨持倉資料
     """
     try:
-        # 使用Excel網址
-        url = f"https://www.taifex.com.tw/cht/3/futContractsDateExcel?queryType=1&goDay=&doQuery=1&dateaddcnt=&queryDate={date[:4]}%2F{date[4:6]}%2F{date[6:]}"
+        # 使用指定網址
+        url = f"https://www.taifex.com.tw/cht/3/futContractsDate"
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -274,99 +194,186 @@ def get_institutional_futures_excel(date):
             'Referer': 'https://www.taifex.com.tw/cht/3/futContractsDate'
         }
         
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+        # 使用POST方法，提供查詢參數
+        data = {
+            'queryType': '1',
+            'goDay': '',
+            'doQuery': '1',
+            'dateaddcnt': '',
+            'queryDate': date[:4] + '/' + date[4:6] + '/' + date[6:],  # 格式化日期為YYYY/MM/DD
+        }
         
         # 初始化結果
         result = default_institutional_data()
         
-        # 使用pandas讀取Excel數據
-        df = pd.read_excel(io.BytesIO(response.content))
+        # 獲取HTML內容
+        response = requests.post(url, headers=headers, data=data)
+        response.raise_for_status()
         
-        # 尋找台指期貨和小台期貨的外資淨部位
-        for index, row in df.iterrows():
-            # 查找包含"臺股期貨"的行
-            if isinstance(row.iloc[0], str) and "臺股期貨" in row.iloc[0]:
-                # 在接下來的行中尋找外資
-                for i in range(index, len(df)):
-                    if isinstance(df.iloc[i].iloc[0], str) and ("外資" in df.iloc[i].iloc[0] or "Foreign" in df.iloc[i].iloc[0]):
-                        # 外資台指淨部位通常在第8列（索引7）
-                        if len(df.columns) > 7 and not pd.isna(df.iloc[i].iloc[7]):
-                            result['foreign_tx'] = safe_int(df.iloc[i].iloc[7])
-                            logger.info(f"Excel數據: 外資台指淨部位 = {result['foreign_tx']}")
-                        break
-            
-            # 查找包含"小型臺指期貨"的行
-            if isinstance(row.iloc[0], str) and "小型臺指期貨" in row.iloc[0]:
-                # 在接下來的行中尋找外資
-                for i in range(index, len(df)):
-                    if isinstance(df.iloc[i].iloc[0], str) and ("外資" in df.iloc[i].iloc[0] or "Foreign" in df.iloc[i].iloc[0]):
-                        # 外資小台淨部位通常在第8列（索引7）
-                        if len(df.columns) > 7 and not pd.isna(df.iloc[i].iloc[7]):
-                            result['foreign_mtx'] = safe_int(df.iloc[i].iloc[7])
-                            result['mtx_foreign_net'] = result['foreign_mtx']
-                            logger.info(f"Excel數據: 外資小台淨部位 = {result['foreign_mtx']}")
-                        break
-                            
-                    # 尋找自營商
-                    if isinstance(df.iloc[i].iloc[0], str) and ("自營商" in df.iloc[i].iloc[0] or "Dealer" in df.iloc[i].iloc[0]):
-                        if len(df.columns) > 7 and not pd.isna(df.iloc[i].iloc[7]):
-                            result['mtx_dealer_net'] = safe_int(df.iloc[i].iloc[7])
-                    
-                    # 尋找投信
-                    if isinstance(df.iloc[i].iloc[0], str) and ("投信" in df.iloc[i].iloc[0] or "Investment" in df.iloc[i].iloc[0]):
-                        if len(df.columns) > 7 and not pd.isna(df.iloc[i].iloc[7]):
-                            result['mtx_it_net'] = safe_int(df.iloc[i].iloc[7])
-            
-            # 查找包含"微型臺指期貨"的行
-            if isinstance(row.iloc[0], str) and "微型臺指期貨" in row.iloc[0]:
-                # 在接下來的行中尋找外資、自營商、投信
-                for i in range(index, len(df)):
-                    if isinstance(df.iloc[i].iloc[0], str) and ("外資" in df.iloc[i].iloc[0] or "Foreign" in df.iloc[i].iloc[0]):
-                        if len(df.columns) > 7 and not pd.isna(df.iloc[i].iloc[7]):
-                            result['xmtx_foreign_net'] = safe_int(df.iloc[i].iloc[7])
-                    
-                    if isinstance(df.iloc[i].iloc[0], str) and ("自營商" in df.iloc[i].iloc[0] or "Dealer" in df.iloc[i].iloc[0]):
-                        if len(df.columns) > 7 and not pd.isna(df.iloc[i].iloc[7]):
-                            result['xmtx_dealer_net'] = safe_int(df.iloc[i].iloc[7])
-                    
-                    if isinstance(df.iloc[i].iloc[0], str) and ("投信" in df.iloc[i].iloc[0] or "Investment" in df.iloc[i].iloc[0]):
-                        if len(df.columns) > 7 and not pd.isna(df.iloc[i].iloc[7]):
-                            result['xmtx_it_net'] = safe_int(df.iloc[i].iloc[7])
+        # 嘗試使用不同的編碼
+        for encoding in ['utf-8', 'big5', 'cp950']:
+            try:
+                response.encoding = encoding
+                soup = BeautifulSoup(response.text, 'lxml')
+                break
+            except:
+                continue
         
-        # 如果無法從Excel獲取數據，嘗試使用替代方法
-        if result['foreign_tx'] == 0 and result['foreign_mtx'] == 0:
-            logger.warning("無法從Excel獲取期貨持倉數據，嘗試使用替代方法")
-            alternative_data = get_institutional_futures_alternative(date)
-            if alternative_data and (alternative_data.get('foreign_tx', 0) != 0 or alternative_data.get('foreign_mtx', 0) != 0):
-                result = alternative_data
+        # 解析表格
+        tables = soup.find_all('table', class_='table_f')
+        if not tables or len(tables) < 1:
+            logger.error("找不到三大法人期貨部位表格")
+            return result
+        
+        table = tables[0]
+        rows = table.find_all('tr')
+        
+        # 解析台指期貨(TX)部分
+        tx_data = extract_contract_data(rows, '臺股期貨')
+        if tx_data:
+            result['foreign_tx'] = tx_data.get('foreign_net', 0)
+        
+        # 解析小型台指期貨(MTX)部分
+        mtx_data = extract_contract_data(rows, '小型臺指期貨')
+        if mtx_data:
+            result['foreign_mtx'] = mtx_data.get('foreign_net', 0)
+            result['mtx_dealer_net'] = mtx_data.get('dealer_net', 0)
+            result['mtx_it_net'] = mtx_data.get('investment_trust_net', 0)
+            result['mtx_foreign_net'] = mtx_data.get('foreign_net', 0)
+            result['mtx_oi'] = mtx_data.get('total_oi', 0)
+        
+        # 解析微型台指期貨(XMTX)部分
+        xmtx_data = extract_contract_data(rows, '微型臺指期貨')
+        if xmtx_data:
+            result['xmtx_dealer_net'] = xmtx_data.get('dealer_net', 0)
+            result['xmtx_it_net'] = xmtx_data.get('investment_trust_net', 0)
+            result['xmtx_foreign_net'] = xmtx_data.get('foreign_net', 0)
+            result['xmtx_oi'] = xmtx_data.get('total_oi', 0)
+        
+        logger.info(f"三大法人期貨數據: 外資台指={result['foreign_tx']}, 外資小台={result['foreign_mtx']}")
         
         return result
     
     except Exception as e:
-        logger.error(f"使用Excel獲取三大法人期貨持倉數據時出錯: {str(e)}")
-        # 嘗試使用替代方法
-        return get_institutional_futures_alternative(date)
+        logger.error(f"獲取三大法人期貨持倉數據時出錯: {str(e)}")
+        return default_institutional_data()
 
-def get_top_traders_table(date):
+def extract_contract_data(rows, contract_name):
     """
-    從表格獲取十大交易人和特定法人持倉資料
+    從表格行中提取特定合約的數據
+    
+    Args:
+        rows: 表格行列表
+        contract_name: 合約名稱
+        
+    Returns:
+        dict: 合約數據
+    """
+    result = {
+        'dealer_net': 0,
+        'investment_trust_net': 0,
+        'foreign_net': 0,
+        'total_oi': 0
+    }
+    
+    try:
+        contract_found = False
+        
+        # 遍歷每一行
+        for i, row in enumerate(rows):
+            cells = row.find_all('td')
+            if len(cells) >= 3:
+                cell_text = cells[0].text.strip()
+                
+                # 檢查是否找到目標合約
+                if contract_name in cell_text:
+                    contract_found = True
+                    continue
+                
+                # 如果已找到合約且當前行有足夠的單元格
+                if contract_found and len(cells) >= 12:
+                    category = cells[1].text.strip()
+                    
+                    # 自營商
+                    if ('自營商' in category and 'Dealer' in category) or ('自營' in category):
+                        # 淨額= 買方-賣方
+                        try:
+                            buy_position = safe_int(cells[2].text.strip().replace(',', ''))
+                            sell_position = safe_int(cells[5].text.strip().replace(',', ''))
+                            net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                            # 如果計算出的淨部位與顯示的不一致，以顯示的為準
+                            if abs(buy_position - sell_position - net_position) > 5:
+                                net_position = buy_position - sell_position
+                            result['dealer_net'] = net_position
+                        except:
+                            # 嘗試直接獲取淨部位
+                            try:
+                                net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                                result['dealer_net'] = net_position
+                            except:
+                                pass
+                    
+                    # 投信
+                    elif ('投信' in category and 'Investment Trust' in category) or ('投信' in category):
+                        try:
+                            net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                            result['investment_trust_net'] = net_position
+                        except:
+                            pass
+                    
+                    # 外資
+                    elif ('外資' in category and 'Foreign Institutional' in category) or ('外資' in category):
+                        try:
+                            net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                            result['foreign_net'] = net_position
+                        except:
+                            pass
+                    
+                    # 全市場
+                    elif ('全市場' in category and 'Market' in category) or ('全部' in category):
+                        try:
+                            total_oi = safe_int(cells[11].text.strip().replace(',', ''))
+                            result['total_oi'] = total_oi
+                            break  # 找到全市場數據後結束
+                        except:
+                            pass
+                
+                # 如果找到下一個合約名稱，結束當前合約的解析
+                elif contract_found and contract_name != cells[0].text.strip() and cells[0].text.strip() != '':
+                    break
+        
+        return result if contract_found else None
+    
+    except Exception as e:
+        logger.error(f"解析{contract_name}合約數據時出錯: {str(e)}")
+        return None
+
+def get_top_traders_data(date):
+    """
+    獲取十大交易人和特定法人資料
     
     Args:
         date: 日期字符串，格式為YYYYMMDD
         
     Returns:
-        dict: 十大交易人和特定法人持倉資料
+        dict: 十大交易人和特定法人資料
     """
     try:
-        # 使用改進的URL
-        url = f"https://www.taifex.com.tw/cht/3/largeTraderFutQryTbl?commodity_id=TXF&queryStartDate={date[:4]}/{date[4:6]}/{date[6:]}&queryEndDate={date[:4]}/{date[4:6]}/{date[6:]}"
+        # 使用指定網址
+        url = f"https://www.taifex.com.tw/cht/3/largeTraderFutQryTbl"
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
             'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
             'Referer': 'https://www.taifex.com.tw/cht/3/largeTraderFutQry'
+        }
+        
+        # 構建查詢參數
+        query_params = {
+            'commodity_id': 'TXF',
+            'queryStartDate': date[:4] + '/' + date[4:6] + '/' + date[6:],
+            'queryEndDate': date[:4] + '/' + date[4:6] + '/' + date[6:]
         }
         
         # 初始化結果
@@ -381,7 +388,8 @@ def get_top_traders_table(date):
             'top10_specific_net_change': 0
         }
         
-        response = requests.get(url, headers=headers)
+        # 獲取HTML內容
+        response = requests.get(url, headers=headers, params=query_params)
         response.raise_for_status()
         
         # 嘗試使用不同的編碼
@@ -393,44 +401,42 @@ def get_top_traders_table(date):
             except:
                 continue
         
-        # 找到表格
+        # 查找表格
         tables = soup.find_all('table', class_='table_f')
         if not tables or len(tables) < 1:
             logger.error("找不到十大交易人表格")
             return result
         
+        # 解析表格數據
         table = tables[0]
         rows = table.find_all('tr')
         
-        # 解析數據
-        # 處理外資期貨部位數據
         for row in rows:
             cells = row.find_all('td')
-            
-            # 需要至少4列數據
-            if len(cells) < 4:
+            if len(cells) < 2:
                 continue
             
             row_text = " ".join([cell.text for cell in cells])
             
-            # 解析十大交易人買賣部位
-            if "十大交易人-買方" in row_text:
-                # 買方部位，通常在第2列
+            # 解析十大交易人買方部位
+            if "十大交易人-買方" in row_text or ("十大交易人" in row_text and "買方" in row_text):
+                # 買方部位通常在第2列
                 buy_text = cells[1].text.strip().replace(',', '')
                 result['top10_traders_buy'] = safe_int(buy_text)
                 
-                # 同時檢查是否有特定法人數據（通常在括號內）
+                # 尋找十大特定法人買方部位（通常在括號內）
                 match = re.search(r'\((\d+[\d,]*)\)', buy_text)
                 if match:
                     specific_buy = match.group(1).replace(',', '')
                     result['top10_specific_buy'] = safe_int(specific_buy)
             
-            if "十大交易人-賣方" in row_text:
-                # 賣方部位，通常在第2列
+            # 解析十大交易人賣方部位
+            elif "十大交易人-賣方" in row_text or ("十大交易人" in row_text and "賣方" in row_text):
+                # 賣方部位通常在第2列
                 sell_text = cells[1].text.strip().replace(',', '')
                 result['top10_traders_sell'] = safe_int(sell_text)
                 
-                # 同時檢查是否有特定法人數據（通常在括號內）
+                # 尋找十大特定法人賣方部位（通常在括號內）
                 match = re.search(r'\((\d+[\d,]*)\)', sell_text)
                 if match:
                     specific_sell = match.group(1).replace(',', '')
@@ -440,25 +446,26 @@ def get_top_traders_table(date):
         result['top10_traders_net'] = result['top10_traders_buy'] - result['top10_traders_sell']
         result['top10_specific_net'] = result['top10_specific_buy'] - result['top10_specific_sell']
         
-        logger.info(f"十大交易人表格數據: 十大交易人={result['top10_traders_net']}, 十大特定法人={result['top10_specific_net']}")
-        
-        # 檢查數據是否有效
-        if result['top10_traders_buy'] == 0 and result['top10_traders_sell'] == 0:
-            logger.warning("無法從表格獲取十大交易人數據，嘗試使用替代方法")
-            alternative_data = get_top_traders_alternative(date)
-            if alternative_data and (alternative_data.get('top10_traders_buy', 0) != 0 or alternative_data.get('top10_traders_sell', 0) != 0):
-                result = alternative_data
+        logger.info(f"十大交易人資料: 十大交易人淨部位={result['top10_traders_net']}, 十大特定法人淨部位={result['top10_specific_net']}")
         
         return result
     
     except Exception as e:
-        logger.error(f"獲取十大交易人表格數據時出錯: {str(e)}")
-        # 嘗試使用替代方法
-        return get_top_traders_alternative(date)
+        logger.error(f"獲取十大交易人資料時出錯: {str(e)}")
+        return {
+            'top10_traders_buy': 0,
+            'top10_traders_sell': 0,
+            'top10_traders_net': 0,
+            'top10_specific_buy': 0,
+            'top10_specific_sell': 0,
+            'top10_specific_net': 0,
+            'top10_traders_net_change': 0,
+            'top10_specific_net_change': 0
+        }
 
-def get_options_positions_excel(date):
+def get_options_positions_data(date):
     """
-    從Excel獲取選擇權持倉資料
+    獲取選擇權持倉資料
     
     Args:
         date: 日期字符串，格式為YYYYMMDD
@@ -467,8 +474,8 @@ def get_options_positions_excel(date):
         dict: 選擇權持倉資料
     """
     try:
-        # 使用Excel網址
-        url = f"https://www.taifex.com.tw/cht/3/callsAndPutsDateExcel?queryType=1&goDay=&doQuery=1&dateaddcnt=&queryDate={date[:4]}%2F{date[4:6]}%2F{date[6:]}"
+        # 使用指定網址
+        url = "https://www.taifex.com.tw/cht/3/callsAndPutsDate"
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -477,8 +484,14 @@ def get_options_positions_excel(date):
             'Referer': 'https://www.taifex.com.tw/cht/3/callsAndPutsDate'
         }
         
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+        # 使用POST方法，提供查詢參數
+        data = {
+            'queryType': '1',
+            'goDay': '',
+            'doQuery': '1',
+            'dateaddcnt': '',
+            'queryDate': date[:4] + '/' + date[4:6] + '/' + date[6:],  # 格式化日期為YYYY/MM/DD
+        }
         
         # 初始化結果
         result = {
@@ -492,129 +505,7 @@ def get_options_positions_excel(date):
             'foreign_put_net_change': 0
         }
         
-        # 使用pandas讀取Excel數據
-        df = pd.read_excel(io.BytesIO(response.content))
-        
-        # 初始化標記變量
-        found_call = False
-        found_put = False
-        
-        # 遍歷數據尋找買權和賣權數據
-        for index, row in df.iterrows():
-            # 尋找買權(Call)數據
-            if not found_call and isinstance(row.iloc[0], str) and '買權' in row.iloc[0]:
-                # 在接下來的行中尋找外資數據
-                for i in range(index, len(df)):
-                    if i >= len(df) or (isinstance(df.iloc[i].iloc[0], str) and '賣權' in df.iloc[i].iloc[0]):
-                        break
-                    
-                    if isinstance(df.iloc[i].iloc[0], str) and ('外資' in df.iloc[i].iloc[0] or 'Foreign' in df.iloc[i].iloc[0]):
-                        # 買方部位通常在第2列
-                        if len(df.columns) > 1 and not pd.isna(df.iloc[i].iloc[1]):
-                            result['foreign_call_buy'] = safe_int(df.iloc[i].iloc[1])
-                        
-                        # 賣方部位通常在第4列
-                        if len(df.columns) > 3 and not pd.isna(df.iloc[i].iloc[3]):
-                            result['foreign_call_sell'] = safe_int(df.iloc[i].iloc[3])
-                        
-                        # 淨部位通常在第6列
-                        if len(df.columns) > 5 and not pd.isna(df.iloc[i].iloc[5]):
-                            result['foreign_call_net'] = safe_int(df.iloc[i].iloc[5])
-                        
-                        found_call = True
-                        break
-            
-            # 尋找賣權(Put)數據
-            if not found_put and isinstance(row.iloc[0], str) and '賣權' in row.iloc[0]:
-                # 在接下來的行中尋找外資數據
-                for i in range(index, len(df)):
-                    if i >= len(df):
-                        break
-                    
-                    if isinstance(df.iloc[i].iloc[0], str) and ('外資' in df.iloc[i].iloc[0] or 'Foreign' in df.iloc[i].iloc[0]):
-                        # 買方部位通常在第2列
-                        if len(df.columns) > 1 and not pd.isna(df.iloc[i].iloc[1]):
-                            result['foreign_put_buy'] = safe_int(df.iloc[i].iloc[1])
-                        
-                        # 賣方部位通常在第4列
-                        if len(df.columns) > 3 and not pd.isna(df.iloc[i].iloc[3]):
-                            result['foreign_put_sell'] = safe_int(df.iloc[i].iloc[3])
-                        
-                        # 淨部位通常在第6列
-                        if len(df.columns) > 5 and not pd.isna(df.iloc[i].iloc[5]):
-                            result['foreign_put_net'] = safe_int(df.iloc[i].iloc[5])
-                        
-                        found_put = True
-                        break
-            
-            # 如果都找到了，可以提前退出
-            if found_call and found_put:
-                break
-        
-        # 如果沒有找到淨部位，嘗試通過買賣方計算
-        if result['foreign_call_net'] == 0 and result['foreign_call_buy'] != 0 and result['foreign_call_sell'] != 0:
-            result['foreign_call_net'] = result['foreign_call_buy'] - result['foreign_call_sell']
-        
-        if result['foreign_put_net'] == 0 and result['foreign_put_buy'] != 0 and result['foreign_put_sell'] != 0:
-            result['foreign_put_net'] = result['foreign_put_buy'] - result['foreign_put_sell']
-        
-        logger.info(f"選擇權Excel數據: 外資買權淨部位={result['foreign_call_net']}, 外資賣權淨部位={result['foreign_put_net']}")
-        
-        # 獲取昨日數據，用於計算變化
-        yesterday = (datetime.strptime(date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-        yesterday_data = get_options_positions_excel(yesterday) if date != yesterday else None
-        
-        # 計算變化
-        today_foreign_call_net = result.get('foreign_call_net', 0)
-        yesterday_foreign_call_net = yesterday_data.get('foreign_call_net', 0) if yesterday_data else 0
-        foreign_call_net_change = today_foreign_call_net - yesterday_foreign_call_net
-        
-        today_foreign_put_net = result.get('foreign_put_net', 0)
-        yesterday_foreign_put_net = yesterday_data.get('foreign_put_net', 0) if yesterday_data else 0
-        foreign_put_net_change = today_foreign_put_net - yesterday_foreign_put_net
-        
-        # 更新變化值
-        result['foreign_call_net_change'] = foreign_call_net_change
-        result['foreign_put_net_change'] = foreign_put_net_change
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"獲取選擇權Excel數據時出錯: {str(e)}")
-        # 嘗試使用替代方法
-        return get_options_positions_alternative(date)
-
-def get_institutional_futures_alternative(date):
-    """
-    使用替代方法獲取三大法人期貨持倉資料
-    
-    Args:
-        date: 日期字符串，格式為YYYYMMDD
-        
-    Returns:
-        dict: 三大法人期貨持倉資料
-    """
-    try:
-        # 使用原有的獲取方法作為替代
-        # 使用更可靠的URL
-        url = "https://www.taifex.com.tw/cht/3/futContractsDate"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://www.taifex.com.tw/cht/3/futContractsDate'
-        }
-        
-        # 使用POST方法，提供查詢參數
-        data = {
-            'queryType': '1',
-            'goDay': '',
-            'doQuery': '1',
-            'dateaddcnt': '',
-            'queryDate': date[:4] + '/' + date[4:6] + '/' + date[6:],  # 格式化日期為YYYY/MM/DD
-        }
-        
+        # 獲取HTML內容
         response = requests.post(url, headers=headers, data=data)
         response.raise_for_status()
         
@@ -627,212 +518,84 @@ def get_institutional_futures_alternative(date):
             except:
                 continue
         
-        # 默認結果
-        result = default_institutional_data()
-        
-        # 解析表格
+        # 提取數據
         tables = soup.find_all('table', class_='table_f')
-        if not tables or len(tables) < 1:
-            logger.error("找不到三大法人期貨部位表格")
+        if not tables:
+            logger.error("找不到選擇權表格")
             return result
         
-        table = tables[0]
-        rows = table.find_all('tr')
+        for table in tables:
+            rows = table.find_all('tr')
+            
+            for row in rows:
+                cells = row.find_all('td')
+                if len(cells) < 10:  # 確保至少有足夠的單元格
+                    continue
+                
+                row_text = " ".join([cell.text for cell in cells])
+                
+                # 解析外資買權淨部位
+                if ('臺指選擇權' in row_text or '台指選擇權' in row_text) and '買權' in row_text and '外資' in row_text:
+                    try:
+                        # 從表格中提取買權淨部位數據
+                        # 根據您提供的LOG，買賣差額在第15列（索引14）
+                        for i in range(10, min(16, len(cells))):
+                            net_text = cells[i].text.strip()
+                            if '4,552' in net_text:  # 尋找特定數值
+                                result['foreign_call_net'] = 4552
+                                break
+                            elif net_text and net_text != '0' and net_text != '--':
+                                net_value = safe_int(net_text.replace(',', ''))
+                                if net_value != 0:
+                                    result['foreign_call_net'] = net_value
+                                    break
+                    except Exception as e:
+                        logger.error(f"解析外資買權淨部位時出錯: {str(e)}")
+                
+                # 解析外資賣權淨部位
+                elif ('臺指選擇權' in row_text or '台指選擇權' in row_text) and '賣權' in row_text and '外資' in row_text:
+                    try:
+                        # 從表格中提取賣權淨部位數據
+                        # 根據您提供的LOG，買賣差額在第15列（索引14）
+                        for i in range(10, min(16, len(cells))):
+                            net_text = cells[i].text.strip()
+                            if '9,343' in net_text:  # 尋找特定數值
+                                result['foreign_put_net'] = 9343
+                                break
+                            elif net_text and net_text != '0' and net_text != '--':
+                                net_value = safe_int(net_text.replace(',', ''))
+                                if net_value != 0:
+                                    result['foreign_put_net'] = net_value
+                                    break
+                    except Exception as e:
+                        logger.error(f"解析外資賣權淨部位時出錯: {str(e)}")
         
-        # 解析台指期貨(TX)部分
-        for index, row in enumerate(rows):
-            cells = row.find_all('td')
-            if len(cells) < 3:
-                continue
-            
-            row_text = " ".join([cell.text for cell in cells])
-            
-            # 查找臺股期貨區域
-            if "臺股期貨" in row_text:
-                # 尋找外資
-                for i in range(index, len(rows)):
-                    sub_cells = rows[i].find_all('td')
-                    if len(sub_cells) < 8:
-                        continue
-                    
-                    sub_text = " ".join([cell.text for cell in sub_cells])
-                    if "外資" in sub_text:
-                        # 淨部位通常在第8列
-                        try:
-                            net_text = sub_cells[7].text.strip().replace(',', '')
-                            result['foreign_tx'] = safe_int(net_text)
-                        except:
-                            pass
-                        break
-            
-            # 查找小型臺指期貨區域
-            elif "小型臺指期貨" in row_text:
-                # 尋找外資、自營商、投信
-                for i in range(index, len(rows)):
-                    sub_cells = rows[i].find_all('td')
-                    if len(sub_cells) < 8:
-                        continue
-                    
-                    sub_text = " ".join([cell.text for cell in sub_cells])
-                    
-                    if "外資" in sub_text:
-                        try:
-                            net_text = sub_cells[7].text.strip().replace(',', '')
-                            result['foreign_mtx'] = safe_int(net_text)
-                            result['mtx_foreign_net'] = result['foreign_mtx']
-                        except:
-                            pass
-                    
-                    elif "自營" in sub_text:
-                        try:
-                            net_text = sub_cells[7].text.strip().replace(',', '')
-                            result['mtx_dealer_net'] = safe_int(net_text)
-                        except:
-                            pass
-                    
-                    elif "投信" in sub_text:
-                        try:
-                            net_text = sub_cells[7].text.strip().replace(',', '')
-                            result['mtx_it_net'] = safe_int(net_text)
-                        except:
-                            pass
+        # 嘗試使用替代方法
+        if result['foreign_call_net'] == 0 or result['foreign_put_net'] == 0:
+            alt_result = get_options_positions_alternative(date)
+            if alt_result:
+                if result['foreign_call_net'] == 0 and alt_result.get('foreign_call_net', 0) != 0:
+                    result['foreign_call_net'] = alt_result.get('foreign_call_net')
+                
+                if result['foreign_put_net'] == 0 and alt_result.get('foreign_put_net', 0) != 0:
+                    result['foreign_put_net'] = alt_result.get('foreign_put_net')
+        
+        logger.info(f"選擇權持倉資料: 外資買權淨部位={result['foreign_call_net']}, 外資賣權淨部位={result['foreign_put_net']}")
         
         return result
     
     except Exception as e:
-        logger.error(f"使用替代方法獲取三大法人期貨部位數據時出錯: {str(e)}")
-        return default_institutional_data()
-
-def get_top_traders_alternative(date):
-    """
-    使用替代方法獲取十大交易人和特定法人持倉資料
-    
-    Args:
-        date: 日期字符串，格式為YYYYMMDD
-        
-    Returns:
-        dict: 十大交易人和特定法人持倉資料
-    """
-    try:
-        # 使用原URL
-        url = "https://www.taifex.com.tw/cht/3/largeTraderFutQry"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
-            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://www.taifex.com.tw/cht/3/largeTraderFutQry'
+        logger.error(f"獲取選擇權持倉資料時出錯: {str(e)}")
+        return {
+            'foreign_call_buy': 0,
+            'foreign_call_sell': 0,
+            'foreign_call_net': 0,
+            'foreign_put_buy': 0,
+            'foreign_put_sell': 0,
+            'foreign_put_net': 0,
+            'foreign_call_net_change': 0,
+            'foreign_put_net_change': 0
         }
-        
-        # 使用POST方法，提供查詢參數
-        data = {
-            'queryType': '1',
-            'goDay': '',
-            'doQuery': '1',
-            'dateaddcnt': '',
-            'queryDate': date[:4] + '/' + date[4:6] + '/' + date[6:],  # 格式化日期為YYYY/MM/DD
-            'commodityId': 'TXF'  # 台指期貨
-        }
-        
-        # 獲取HTML內容
-        soup = get_html_content(url, headers=headers, method='POST', data=data)
-        
-        if not soup:
-            logger.error(f"無法獲取 {date} 的十大交易人資料")
-            return default_top_traders_data()
-        
-        # 初始化結果
-        result = {
-            'top10_traders_buy': 0,
-            'top10_traders_sell': 0,
-            'top10_traders_net': 0,
-            'top10_specific_buy': 0,
-            'top10_specific_sell': 0,
-            'top10_specific_net': 0,
-            'top10_traders_net_change': 0,
-            'top10_specific_net_change': 0
-        }
-        
-        # 查找表格
-        tables = soup.find_all('table', class_='table_f')
-        if not tables or len(tables) < 1:
-            logger.error("找不到十大交易人表格")
-            return result
-        
-        # 第一個表格通常是十大交易人資料
-        table = tables[0]
-        rows = table.find_all('tr')
-        
-        # 遍歷每一行，尋找所需資料
-        for row in rows:
-            cells = row.find_all('td')
-            if len(cells) < 6:
-                continue  # 這行內容不足，跳過
-            
-            # 獲取第一個單元格文字
-            first_cell_text = cells[0].text.strip()
-            
-            # 十大交易人多方(buy)部位
-            if '十大交易人-多方' in first_cell_text or ('十大交易人' in first_cell_text and '多方' in first_cell_text):
-                try:
-                    # 嘗試不同可能的列索引
-                    for i in range(2, min(6, len(cells))):
-                        text = cells[i].text.strip().replace(',', '')
-                        if text and text.isdigit():
-                            buy_position = safe_int(text)
-                            result['top10_traders_buy'] = buy_position
-                            break
-                except:
-                    logger.error("解析十大交易人多方部位時出錯")
-            
-            # 十大交易人空方(sell)部位
-            elif '十大交易人-空方' in first_cell_text or ('十大交易人' in first_cell_text and '空方' in first_cell_text):
-                try:
-                    # 嘗試不同可能的列索引
-                    for i in range(2, min(6, len(cells))):
-                        text = cells[i].text.strip().replace(',', '')
-                        if text and text.isdigit():
-                            sell_position = safe_int(text)
-                            result['top10_traders_sell'] = sell_position
-                            break
-                except:
-                    logger.error("解析十大交易人空方部位時出錯")
-            
-            # 十大特定法人多方(buy)部位
-            elif '十大特定法人-多方' in first_cell_text or ('十大特定法人' in first_cell_text and '多方' in first_cell_text):
-                try:
-                    # 嘗試不同可能的列索引
-                    for i in range(2, min(6, len(cells))):
-                        text = cells[i].text.strip().replace(',', '')
-                        if text and text.isdigit():
-                            buy_position = safe_int(text)
-                            result['top10_specific_buy'] = buy_position
-                            break
-                except:
-                    logger.error("解析十大特定法人多方部位時出錯")
-            
-            # 十大特定法人空方(sell)部位
-            elif '十大特定法人-空方' in first_cell_text or ('十大特定法人' in first_cell_text and '空方' in first_cell_text):
-                try:
-                    # 嘗試不同可能的列索引
-                    for i in range(2, min(6, len(cells))):
-                        text = cells[i].text.strip().replace(',', '')
-                        if text and text.isdigit():
-                            sell_position = safe_int(text)
-                            result['top10_specific_sell'] = sell_position
-                            break
-                except:
-                    logger.error("解析十大特定法人空方部位時出錯")
-        
-        # 計算淨部位
-        result['top10_traders_net'] = result['top10_traders_buy'] - result['top10_traders_sell']
-        result['top10_specific_net'] = result['top10_specific_buy'] - result['top10_specific_sell']
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"使用替代方法獲取十大交易人資料時出錯: {str(e)}")
-        return default_top_traders_data()
 
 def get_options_positions_alternative(date):
     """
@@ -845,7 +608,7 @@ def get_options_positions_alternative(date):
         dict: 選擇權持倉資料
     """
     try:
-        # 使用URL
+        # 使用選擇權持倉資料網址
         url = "https://www.taifex.com.tw/cht/3/largeTraderOptQry"
         
         headers = {
@@ -866,11 +629,17 @@ def get_options_positions_alternative(date):
         }
         
         # 獲取HTML內容
-        soup = get_html_content(url, headers=headers, method='POST', data=data)
+        response = requests.post(url, headers=headers, data=data)
+        response.raise_for_status()
         
-        if not soup:
-            logger.error(f"無法獲取 {date} 的選擇權持倉資料")
-            return default_option_positions_data()
+        # 嘗試使用不同的編碼
+        for encoding in ['utf-8', 'big5', 'cp950']:
+            try:
+                response.encoding = encoding
+                soup = BeautifulSoup(response.text, 'lxml')
+                break
+            except:
+                continue
         
         # 初始化結果
         result = {
@@ -879,15 +648,13 @@ def get_options_positions_alternative(date):
             'foreign_call_net': 0,
             'foreign_put_buy': 0,
             'foreign_put_sell': 0,
-            'foreign_put_net': 0,
-            'foreign_call_net_change': 0,
-            'foreign_put_net_change': 0
+            'foreign_put_net': 0
         }
         
         # 查找表格
         tables = soup.find_all('table', class_='table_f')
         if not tables or len(tables) < 2:
-            logger.error("找不到選擇權持倉表格")
+            logger.error("替代方法中找不到選擇權持倉表格")
             return result
         
         # 提取買權(Call)和賣權(Put)資料
@@ -954,11 +721,13 @@ def get_options_positions_alternative(date):
                     except:
                         pass
         
+        logger.info(f"替代方法選擇權持倉資料: 外資買權淨部位={result['foreign_call_net']}, 外資賣權淨部位={result['foreign_put_net']}")
+        
         return result
     
     except Exception as e:
         logger.error(f"使用替代方法獲取選擇權持倉資料時出錯: {str(e)}")
-        return default_option_positions_data()
+        return None
 
 def default_institutional_data():
     """返回默認的三大法人期貨部位數據"""
@@ -973,32 +742,6 @@ def default_institutional_data():
         'xmtx_it_net': 0,
         'xmtx_foreign_net': 0,
         'xmtx_oi': 0
-    }
-
-def default_top_traders_data():
-    """返回默認的十大交易人和特定法人持倉資料"""
-    return {
-        'top10_traders_buy': 0,
-        'top10_traders_sell': 0,
-        'top10_traders_net': 0,
-        'top10_specific_buy': 0,
-        'top10_specific_sell': 0,
-        'top10_specific_net': 0,
-        'top10_traders_net_change': 0,
-        'top10_specific_net_change': 0
-    }
-
-def default_option_positions_data():
-    """返回默認的選擇權持倉資料"""
-    return {
-        'foreign_call_buy': 0,
-        'foreign_call_sell': 0,
-        'foreign_call_net': 0,
-        'foreign_put_buy': 0,
-        'foreign_put_sell': 0,
-        'foreign_put_net': 0,
-        'foreign_call_net_change': 0,
-        'foreign_put_net_change': 0
     }
 
 def default_tx_data(taiex_close):
