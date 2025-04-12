@@ -211,6 +211,10 @@ def push_market_report(line_bot_api, report_id):
     except Exception as e:
         logger.error(f"推送市場報告時發生錯誤: {str(e)}")
 
+"""
+更新排程邏輯部分的程式碼，將以下代碼替換到 scheduler/market_data.py 的 schedule_market_data_job 函數
+"""
+
 def schedule_market_data_job(line_bot_api):
     """
     排程市場數據任務
@@ -218,19 +222,27 @@ def schedule_market_data_job(line_bot_api):
     Args:
         line_bot_api: LINE Bot API 實例
     """
-    # 生成隨機延遲（2-3分鐘）
-    random_minutes = random.randint(2, 3)
+    # 從環境變數獲取基礎時間和隨機延遲範圍
+    base_time = os.environ.get('FETCH_BASE_TIME', '14:50')
+    min_delay = int(os.environ.get('MIN_RANDOM_DELAY', '1'))
+    max_delay = int(os.environ.get('MAX_RANDOM_DELAY', '3'))
+    
+    # 生成隨機延遲（min_delay-max_delay分鐘）
+    random_minutes = random.randint(min_delay, max_delay)
     random_seconds = random.randint(0, 59)
     
-    # 設定爬取時間（14:45 + 隨機延遲）
-    schedule.every().day.at("14:45").do(
+    # 記錄設定
+    logger.info(f"排程設定：基礎時間 {base_time}，隨機延遲 {random_minutes}分{random_seconds}秒")
+    
+    # 設定爬取時間（基礎時間 + 隨機延遲）
+    schedule.every().day.at(base_time).do(
         lambda: delayed_fetch_and_push(line_bot_api, minutes=random_minutes, seconds=random_seconds)
     )
     
     # 晚上清除過期的快取數據
     schedule.every().day.at("23:30").do(clean_cache)
     
-    logger.info(f"已排程市場數據任務，爬取時間：14:45 + {random_minutes}分{random_seconds}秒")
+    logger.info(f"已排程市場數據任務，爬取時間：{base_time} + {random_minutes}分{random_seconds}秒")
 
 def delayed_fetch_and_push(line_bot_api, minutes=0, seconds=0):
     """
