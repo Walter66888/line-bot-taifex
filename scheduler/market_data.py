@@ -1,5 +1,5 @@
 """
-市場數據爬取和推送排程模組
+市場數據爬取和推送排程模組 - 第三次修改版
 """
 import os
 import logging
@@ -12,12 +12,19 @@ import pytz
 from linebot.models import TextSendMessage
 
 from crawler.taiex import get_taiex_data
-from crawler.futures import get_futures_data
+# 移除原本的 futures 引入
+# from crawler.futures import get_futures_data
+# 新增引入三大法人期貨持倉模組
+from crawler.institutional_futures import get_institutional_futures_data
+# 新增引入選擇權持倉模組
+from crawler.option_positions import get_option_positions_data
+# 新增引入十大交易人持倉模組
+from crawler.top_traders import get_top_traders_data
 from crawler.institutional import get_institutional_investors_data
 from crawler.pc_ratio import get_pc_ratio
 from crawler.vix import get_vix_data
-from crawler.top_traders import get_top_traders_data
-from crawler.option_positions import get_option_positions_data
+# 移除原本的十大交易人模組引入
+# from crawler.top_traders import get_top_traders_data
 from database.mongodb import (
     save_market_report, 
     update_consecutive_days, 
@@ -44,9 +51,9 @@ def fetch_market_data():
         taiex_data = get_taiex_data()
         logger.info(f"獲取加權指數數據: {taiex_data}")
         
-        # 獲取期貨數據
-        futures_data = get_futures_data()
-        logger.info(f"獲取期貨數據: {futures_data}")
+        # 移除原本的期貨數據獲取
+        # futures_data = get_futures_data()
+        # logger.info(f"獲取期貨數據: {futures_data}")
         
         # 獲取三大法人數據
         institutional_data = get_institutional_investors_data()
@@ -60,22 +67,28 @@ def fetch_market_data():
         vix_data = get_vix_data()
         logger.info(f"獲取VIX指標數據: {vix_data}")
         
-        # 獲取十大交易人和特定法人持倉數據
-        top_traders_data = get_top_traders_data()
-        logger.info(f"獲取十大交易人數據: {top_traders_data}")
+        # 新增：獲取三大法人期貨持倉數據
+        institutional_futures_data = get_institutional_futures_data()
+        logger.info(f"獲取三大法人期貨持倉數據: {institutional_futures_data}")
         
-        # 獲取選擇權持倉數據
+        # 新增：獲取選擇權持倉數據
         option_positions_data = get_option_positions_data()
         logger.info(f"獲取選擇權持倉數據: {option_positions_data}")
         
-        # 計算散戶指標
-        mtx_institutional_net = futures_data.get('mtx_dealer_net', 0) + futures_data.get('mtx_it_net', 0) + futures_data.get('mtx_foreign_net', 0)
-        mtx_oi = futures_data.get('mtx_oi', 1)  # 避免除以零
-        mtx_retail_indicator = -mtx_institutional_net / mtx_oi * 100 if mtx_oi > 0 else 0.0
+        # 新增：獲取十大交易人持倉數據
+        top_traders_data = get_top_traders_data()
+        logger.info(f"獲取十大交易人數據: {top_traders_data}")
         
-        xmtx_institutional_net = futures_data.get('xmtx_dealer_net', 0) + futures_data.get('xmtx_it_net', 0) + futures_data.get('xmtx_foreign_net', 0)
-        xmtx_oi = futures_data.get('xmtx_oi', 1)  # 避免除以零
-        xmtx_retail_indicator = -xmtx_institutional_net / xmtx_oi * 100 if xmtx_oi > 0 else 0.0
+        # 計算散戶指標
+        # 修改為使用新的三大法人期貨持倉數據
+        # 由於現在沒有完整的期貨數據，先使用固定值
+        mtx_institutional_net = 0  # 暫時使用0
+        mtx_oi = 1  # 避免除以零
+        mtx_retail_indicator = 0.0
+        
+        xmtx_institutional_net = 0  # 暫時使用0
+        xmtx_oi = 1  # 避免除以零
+        xmtx_retail_indicator = 0.0
         
         # 獲取前一天的散戶指標
         yesterday_mtx_retail_indicator = 0.0  # 需要從資料庫獲取
@@ -84,8 +97,10 @@ def fetch_market_data():
         yesterday_vix = 0.0  # 需要從資料庫獲取
         
         # 整合所有數據
+        # 使用新的模組化爬蟲獲取的數據
+        current_date = datetime.now(TW_TIMEZONE).strftime('%Y%m%d')
         market_data = {
-            'date': futures_data.get('date', datetime.now(TW_TIMEZONE).strftime('%Y%m%d')),
+            'date': institutional_data.get('date', current_date),
             'taiex': {
                 'close': taiex_data.get('close', 0),
                 'change': taiex_data.get('change', 0),
@@ -93,10 +108,10 @@ def fetch_market_data():
                 'volume': taiex_data.get('volume', 0)
             },
             'futures': {
-                'close': futures_data.get('close', 0),
-                'change': futures_data.get('change', 0),
-                'change_percent': futures_data.get('change_percent', 0),
-                'bias': futures_data.get('bias', 0)
+                'close': 0,  # 暫時使用0，後續會補充
+                'change': 0,
+                'change_percent': 0,
+                'bias': 0
             },
             'institutional': {
                 'total': institutional_data.get('total', 0),
@@ -107,18 +122,18 @@ def fetch_market_data():
                 'dealer_hedge': institutional_data.get('dealer_hedge', 0)
             },
             'futures_positions': {
-                'foreign_tx_net': futures_data.get('foreign_tx', 0),
+                'foreign_tx_net': institutional_futures_data.get('foreign_tx_net', 0),
                 'foreign_tx_net_change': 0,  # 需要從資料庫計算變化
-                'foreign_mtx_net': futures_data.get('foreign_mtx', 0),
+                'foreign_mtx_net': institutional_futures_data.get('foreign_mtx_net', 0),
                 'foreign_mtx_net_change': 0,  # 需要從資料庫計算變化
                 'foreign_call_net': option_positions_data.get('foreign_call_net', 0),
-                'foreign_call_net_change': option_positions_data.get('foreign_call_net_change', 0),
+                'foreign_call_net_change': 0,  # 需要從資料庫計算變化
                 'foreign_put_net': option_positions_data.get('foreign_put_net', 0),
-                'foreign_put_net_change': option_positions_data.get('foreign_put_net_change', 0),
+                'foreign_put_net_change': 0,  # 需要從資料庫計算變化
                 'top10_traders_net': top_traders_data.get('top10_traders_net', 0),
-                'top10_traders_net_change': top_traders_data.get('top10_traders_net_change', 0),
+                'top10_traders_net_change': 0,  # 需要從資料庫計算變化
                 'top10_specific_net': top_traders_data.get('top10_specific_net', 0),
-                'top10_specific_net_change': top_traders_data.get('top10_specific_net_change', 0)
+                'top10_specific_net_change': 0  # 需要從資料庫計算變化
             },
             'retail_positions': {
                 'mtx_net': -mtx_institutional_net,
@@ -153,6 +168,7 @@ def fetch_market_data():
         logger.error(f"獲取市場數據時發生錯誤: {str(e)}")
         return None
 
+# 以下函數保持不變
 def push_market_report(line_bot_api, report_id):
     """
     推送市場報告到已設定的 LINE 群組
@@ -227,7 +243,7 @@ def schedule_market_data_job(line_bot_api):
     random_minutes = random.randint(min_delay, max_delay)
     random_seconds = random.randint(0, 59)
     
-    # 記錄設定
+    # In 記錄設定
     logger.info(f"排程設定：基礎時間 {base_time}，隨機延遲 {random_minutes}分{random_seconds}秒")
     
     # 設定爬取時間（基礎時間 + 隨機延遲）
