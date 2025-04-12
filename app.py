@@ -5,6 +5,7 @@ import os
 import logging
 from datetime import datetime
 import pytz
+import threading
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -20,7 +21,7 @@ from database.mongodb import (
     save_push_log
 )
 from utils import generate_market_report, generate_taiex_report, generate_institutional_report, generate_futures_report, generate_retail_report
-from scheduler.market_data import start_scheduler_thread
+from scheduler.market_data import start_scheduler_thread, fetch_market_data, push_market_report
 
 # 設定日誌
 logging.basicConfig(
@@ -33,6 +34,9 @@ logger = logging.getLogger(__name__)
 TW_TIMEZONE = pytz.timezone('Asia/Taipei')
 
 app = Flask(__name__)
+
+# 從環境變數獲取管理員 LINE 用戶 ID 列表
+ADMIN_USER_IDS = [admin.strip() for admin in os.environ.get('ADMIN_USER_IDS', '').split(',') if admin.strip()]
 
 # LINE BOT設定
 try:
@@ -130,6 +134,25 @@ def handle_message(event):
     # 記錄請求
     logger.info(f"收到訊息: {text}，來源: {source_type}, ID: {source_id}")
     
+    # 顯示用戶ID (僅在私訊時)
+    if text.lower() in ['id', 'my id', '我的id', '顯示id']:
+        if source_type == 'user':
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=f"您的LINE用戶ID是: {source_id}")
+            )
+        elif source_type == 'group':
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=f"此群組的ID是: {source_id}")
+            )
+        elif source_type == 'room':
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=f"此聊天室的ID是: {source_id}")
+            )
+        return
+    
     # 權限檢查 (如果啟用了資料庫)
     if db:
         authorized = False
@@ -176,8 +199,128 @@ def handle_message(event):
         )
         return
     
-    # 處理命令
-    if '籌碼快報' in text:
+    # 管理員命令 - 手動更新籌碼
+    if text in ['#更新籌碼', '#手動更新']:
+        # 檢查用戶是否為管理員
+        if source_type == 'user' and source_id in ADMIN_USER_IDS:
+            logger.info(f"管理員 {source_id} 請求手動更新籌碼")
+            
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="開始手動更新籌碼資料，請稍候...")
+            )
+            
+            # 創建後台任務執行爬蟲，避免回應超時
+            def background_fetch():
+                try:
+                    report_id = fetch_market_data()
+                    
+                    if report_id:
+                        logger.info(f"手動更新籌碼成功，報告ID: {report_id}")
+                        
+                        # 獲取管理員的用戶ID
+                        admin_id = source_id
+                        
+                        # 生成報告
+                        report_text = generate_market_report()
+                        
+                        # 發送報告給管理員
+                        if report_text:
+                            line_bot_api.push_message(
+                                admin_id,
+                                TextSendMessage(text="✅ 籌碼資料更新成功！以下是最新報告：\n\n" + report_text)
+                            )
+                        else:
+                            line_bot_api.push_message(
+                                admin_id,
+                                TextSendMessage(text="❌ 籌碼資料已更新，但生成報告失敗")
+                            )
+                        
+                        # 詢問是否要推送給所有訂閱群組
+                        line_bot_api.push_message(
+                            admin_id,
+                            TextSendMessage(text="是否要推送給所有訂閱群組？\n回覆「#推送」進行推送，回覆其他內容則不推送。")
+                        )
+                    else:
+                        logger.error("手動更新籌碼失敗")
+                        line_bot_api.push_message(
+                            source_id,
+                            TextSendMessage(text="❌ 手動更新籌碼失敗，請查看日誌")
+                        )
+                except Exception as e:
+                    logger.error(f"手動更新籌碼時發生錯誤: {str(e)}")
+                    line_bot_api.push_message(
+                        source_id,
+                        TextSendMessage(text=f"❌ 手動更新籌碼時發生錯誤: {str(e)}")
+                    )
+            
+            # 在背景執行爬蟲任務
+            thread = threading.Thread(target=background_fetch)
+            thread.daemon = True
+            thread.start()
+            
+        else:
+            # 非管理員嘗試使用管理員命令
+            logger.warning(f"非管理員用戶 {source_id} 嘗試使用管理員命令")
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="⚠️ 此命令僅限管理員使用")
+            )
+            
+    # 管理員命令 - 推送報告到所有群組
+    elif text == '#推送':
+        # 檢查用戶是否為管理員
+        if source_type == 'user' and source_id in ADMIN_USER_IDS:
+            logger.info(f"管理員 {source_id} 請求推送報告到所有群組")
+            
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="開始推送報告到所有訂閱群組，請稍候...")
+            )
+            
+            # 創建後台任務執行推送
+            def background_push():
+                try:
+                    # 獲取最新報告ID
+                    latest_report = get_latest_market_report()
+                    if latest_report and '_id' in latest_report:
+                        report_id = latest_report['_id']
+                        
+                        # 執行推送
+                        push_market_report(line_bot_api, report_id)
+                        
+                        # 通知管理員
+                        line_bot_api.push_message(
+                            source_id,
+                            TextSendMessage(text="✅ 報告已成功推送到所有訂閱群組")
+                        )
+                    else:
+                        line_bot_api.push_message(
+                            source_id,
+                            TextSendMessage(text="❌ 找不到最新報告，無法推送")
+                        )
+                except Exception as e:
+                    logger.error(f"推送報告時發生錯誤: {str(e)}")
+                    line_bot_api.push_message(
+                        source_id,
+                        TextSendMessage(text=f"❌ 推送報告時發生錯誤: {str(e)}")
+                    )
+            
+            # 在背景執行推送任務
+            thread = threading.Thread(target=background_push)
+            thread.daemon = True
+            thread.start()
+            
+        else:
+            # 非管理員嘗試使用管理員命令
+            logger.warning(f"非管理員用戶 {source_id} 嘗試使用管理員命令")
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="⚠️ 此命令僅限管理員使用")
+            )
+            
+    # 處理一般命令
+    elif '籌碼快報' in text:
         logger.info(f"用戶 {source_id} 請求籌碼快報")
         
         # 生成市場報告
