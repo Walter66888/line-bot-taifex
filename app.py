@@ -4,8 +4,8 @@ LINE BOT主應用程式 - 改進版
 import os
 import logging
 from datetime import datetime
-import pytz
 import threading
+import pytz
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -65,9 +65,10 @@ except Exception as e:
     else:
         raise
 
-# 初始化資料庫連接
+# 初始化資料庫連接 - 修正數據庫檢查邏輯
 db = get_db()
-if not db:
+db_connected = db is not None  # 使用正確的方式檢查數據庫連接
+if not db_connected:
     logger.warning("無法連接到資料庫，某些功能可能不可用")
 
 # 啟動排程器
@@ -110,7 +111,8 @@ def handle_message(event):
         # 儲存或更新用戶資訊
         try:
             profile = line_bot_api.get_profile(source_id)
-            save_user_info(source_id, profile.display_name)
+            if db_connected:  # 使用正確的變數檢查數據庫連接
+                save_user_info(source_id, profile.display_name)
         except Exception as e:
             logger.error(f"獲取用戶資訊時出錯: {str(e)}")
     elif source_type == 'group':
@@ -118,14 +120,16 @@ def handle_message(event):
         # 儲存或更新群組資訊
         try:
             # 目前LINE API無法獲取群組名稱，所以只存ID
-            save_group_info(source_id)
+            if db_connected:  # 使用正確的變數檢查數據庫連接
+                save_group_info(source_id)
         except Exception as e:
             logger.error(f"儲存群組資訊時出錯: {str(e)}")
     elif source_type == 'room':
         source_id = event.source.room_id
         # 聊天室也視為群組處理
         try:
-            save_group_info(source_id)
+            if db_connected:  # 使用正確的變數檢查數據庫連接
+                save_group_info(source_id)
         except Exception as e:
             logger.error(f"儲存聊天室資訊時出錯: {str(e)}")
     else:
@@ -154,7 +158,8 @@ def handle_message(event):
         return
     
     # 權限檢查 (如果啟用了資料庫)
-    if db:
+    authorized = True  # 默認授權
+    if db_connected:  # 使用正確的變數檢查數據庫連接
         authorized = False
         if source_type == 'user':
             authorized = is_user_authorized(source_id)
@@ -176,9 +181,6 @@ def handle_message(event):
                     authorized = True
                 except Exception as e:
                     logger.error(f"授權新群組時出錯: {str(e)}")
-    else:
-        # 資料庫未連接時不做權限檢查
-        authorized = True
     
     # 處理被加入好友或群組的情況
     if text == "":
@@ -215,7 +217,7 @@ def handle_message(event):
                 try:
                     report_id = fetch_market_data()
                     
-                    if report_id:
+                    if report_id is not None:  # 檢查 None 而不是使用布爾運算
                         logger.info(f"手動更新籌碼成功，報告ID: {report_id}")
                         
                         # 獲取管理員的用戶ID
@@ -225,7 +227,7 @@ def handle_message(event):
                         report_text = generate_market_report()
                         
                         # 發送報告給管理員
-                        if report_text:
+                        if report_text is not None:  # 檢查 None 而不是使用布爾運算
                             line_bot_api.push_message(
                                 admin_id,
                                 TextSendMessage(text="✅ 籌碼資料更新成功！以下是最新報告：\n\n" + report_text)
@@ -283,7 +285,7 @@ def handle_message(event):
                 try:
                     # 獲取最新報告ID
                     latest_report = get_latest_market_report()
-                    if latest_report and '_id' in latest_report:
+                    if latest_report is not None and '_id' in latest_report:  # 檢查 None 而不是使用布爾運算
                         report_id = latest_report['_id']
                         
                         # 執行推送
@@ -325,14 +327,14 @@ def handle_message(event):
         
         # 生成市場報告
         report_text = generate_market_report()
-        if report_text:
+        if report_text is not None:  # 檢查 None 而不是使用布爾運算
             line_bot_api.reply_message(
                 reply_token,
                 TextSendMessage(text=report_text)
             )
             
             # 記錄推送日誌
-            if db:
+            if db_connected:  # 使用正確的變數檢查數據庫連接
                 target_type = 'user' if source_type == 'user' else 'group'
                 save_push_log(
                     target_type=target_type,
@@ -352,15 +354,16 @@ def handle_message(event):
         logger.info(f"用戶 {source_id} 請求加權指數資訊")
         
         # 生成加權指數報告
-        report_text = generate_taiex_report(get_latest_market_report())
-        if report_text:
+        latest_report = get_latest_market_report()
+        report_text = generate_taiex_report(latest_report)
+        if report_text is not None:  # 檢查 None 而不是使用布爾運算
             line_bot_api.reply_message(
                 reply_token,
                 TextSendMessage(text=report_text)
             )
             
             # 記錄推送日誌
-            if db:
+            if db_connected:  # 使用正確的變數檢查數據庫連接
                 target_type = 'user' if source_type == 'user' else 'group'
                 save_push_log(
                     target_type=target_type,
@@ -380,15 +383,16 @@ def handle_message(event):
         logger.info(f"用戶 {source_id} 請求三大法人資訊")
         
         # 生成三大法人報告
-        report_text = generate_institutional_report(get_latest_market_report())
-        if report_text:
+        latest_report = get_latest_market_report()
+        report_text = generate_institutional_report(latest_report)
+        if report_text is not None:  # 檢查 None 而不是使用布爾運算
             line_bot_api.reply_message(
                 reply_token,
                 TextSendMessage(text=report_text)
             )
             
             # 記錄推送日誌
-            if db:
+            if db_connected:  # 使用正確的變數檢查數據庫連接
                 target_type = 'user' if source_type == 'user' else 'group'
                 save_push_log(
                     target_type=target_type,
@@ -408,15 +412,16 @@ def handle_message(event):
         logger.info(f"用戶 {source_id} 請求期貨籌碼資訊")
         
         # 生成期貨籌碼報告
-        report_text = generate_futures_report(get_latest_market_report())
-        if report_text:
+        latest_report = get_latest_market_report()
+        report_text = generate_futures_report(latest_report)
+        if report_text is not None:  # 檢查 None 而不是使用布爾運算
             line_bot_api.reply_message(
                 reply_token,
                 TextSendMessage(text=report_text)
             )
             
             # 記錄推送日誌
-            if db:
+            if db_connected:  # 使用正確的變數檢查數據庫連接
                 target_type = 'user' if source_type == 'user' else 'group'
                 save_push_log(
                     target_type=target_type,
@@ -436,15 +441,16 @@ def handle_message(event):
         logger.info(f"用戶 {source_id} 請求散戶籌碼資訊")
         
         # 生成散戶籌碼報告
-        report_text = generate_retail_report(get_latest_market_report())
-        if report_text:
+        latest_report = get_latest_market_report()
+        report_text = generate_retail_report(latest_report)
+        if report_text is not None:  # 檢查 None 而不是使用布爾運算
             line_bot_api.reply_message(
                 reply_token,
                 TextSendMessage(text=report_text)
             )
             
             # 記錄推送日誌
-            if db:
+            if db_connected:  # 使用正確的變數檢查數據庫連接
                 target_type = 'user' if source_type == 'user' else 'group'
                 save_push_log(
                     target_type=target_type,
