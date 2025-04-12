@@ -1,5 +1,5 @@
 """
-工具函數模組
+工具函數模組 - 改進版
 """
 import logging
 from datetime import datetime, timedelta
@@ -136,6 +136,10 @@ def generate_full_report(report):
         put_call_ratio_prev = market_indicators.get('put_call_ratio_prev', 0)
         vix = market_indicators.get('vix', 0)
         vix_prev = market_indicators.get('vix_prev', 0)
+        
+        # 處理PC Ratio異常值
+        put_call_ratio = normalize_pc_ratio(put_call_ratio)
+        put_call_ratio_prev = normalize_pc_ratio(put_call_ratio_prev)
         
         # 生成報告文字
         report_text = f"📊 [盤後籌碼快報] {date_string} ({weekday})\n\n"
@@ -691,6 +695,10 @@ def generate_retail_report(report):
         vix = market_indicators.get('vix', 0)
         vix_prev = market_indicators.get('vix_prev', 0)
         
+        # 處理PC Ratio異常值
+        put_call_ratio = normalize_pc_ratio(put_call_ratio)
+        put_call_ratio_prev = normalize_pc_ratio(put_call_ratio_prev)
+        
         # 生成報告文字
         report_text = f"👨‍💼 [散戶籌碼報告] {date_string} ({weekday})\n\n"
         
@@ -737,6 +745,155 @@ def generate_retail_report(report):
     except Exception as e:
         logger.error(f"生成散戶籌碼報告時發生錯誤: {str(e)}")
         return None
+
+def normalize_pc_ratio(value):
+    """處理PC Ratio可能的異常值"""
+    try:
+        if not value:
+            return 0.0
+            
+        # 如果數值過大 (通常大於 10 就不合理)
+        if value > 1000:
+            return value / 10000  # 可能是百分比顯示為整數 (例如 7500 應為 0.75)
+        elif value > 100:
+            return value / 100  # 可能是百分比顯示為整數 (例如 75 應為 0.75)
+        elif value > 10:
+            # 判斷是否合理，通常PC比率在0.5-2.0之間
+            if value > 50:
+                return value / 100
+            elif value > 20:
+                return value / 10
+            
+        return value
+    except:
+        return 0.0
+
+def safe_float(value, default=0.0):
+    """安全地將值轉換為浮點數 - 改進版"""
+    try:
+        if value is None:
+            return default
+        
+        if isinstance(value, str):
+            # 移除千分位逗號和其他非數字字符（保留負號和小數點）
+            value = ''.join(c for c in value if c.isdigit() or c in '.-')
+            
+            # 處理空字符串
+            if not value or value in ['.', '-', '-.']:
+                return default
+        
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+def safe_int(value, default=0):
+    """安全地將值轉換為整數 - 改進版"""
+    try:
+        if value is None:
+            return default
+        
+        if isinstance(value, str):
+            # 移除千分位逗號和其他非數字字符（保留負號）
+            value = ''.join(c for c in value if c.isdigit() or c == '-')
+            
+            # 處理空字符串
+            if not value or value == '-':
+                return default
+        
+        return int(float(value))  # 使用float作為中間轉換，處理小數
+    except (ValueError, TypeError):
+        return default
+
+def format_number(value, decimal_places=2, add_plus=False):
+    """
+    格式化數字為字符串，可選添加正號
+    
+    Args:
+        value: 數字值
+        decimal_places: 小數位數
+        add_plus: 是否為正數添加+號
+        
+    Returns:
+        格式化後的字符串
+    """
+    try:
+        num = safe_float(value)
+        if num > 0 and add_plus:
+            return f"+{num:.{decimal_places}f}"
+        else:
+            return f"{num:.{decimal_places}f}"
+    except:
+        return f"0.{'0' * decimal_places}"
+
+def get_market_trend_symbol(value):
+    """
+    獲取市場趨勢符號
+    
+    Args:
+        value: 數值變化
+        
+    Returns:
+        趨勢符號: ▲, ▼ 或 --
+    """
+    value = safe_float(value)
+    if value > 0:
+        return "▲"
+    elif value < 0:
+        return "▼"
+    else:
+        return "--"
+
+def get_today_date_string(format='%Y%m%d'):
+    """獲取今日日期字符串（台灣時間）"""
+    return datetime.now(TW_TIMEZONE).strftime(format)
+
+def get_yesterday_date_string(format='%Y%m%d'):
+    """獲取昨日日期字符串（台灣時間）"""
+    yesterday = datetime.now(TW_TIMEZONE) - timedelta(days=1)
+    return yesterday.strftime(format)
+
+def is_taiwan_market_closed():
+    """
+    檢查台灣股市是否已收盤
+    台灣股市交易時間: 9:00-13:30
+    """
+    now = datetime.now(TW_TIMEZONE)
+    current_hour = now.hour
+    current_minute = now.minute
+    
+    # 檢查是否為週末
+    if now.weekday() >= 5:  # 5 = 週六, 6 = 週日
+        return True
+    
+    # 檢查是否在交易時間內
+    if (current_hour > 13) or (current_hour == 13 and current_minute >= 30) or (current_hour < 9):
+        return True
+    
+    return False
+
+def get_tw_stock_date(format='%Y%m%d'):
+    """
+    獲取台灣股市最近交易日
+    改進版: 判斷是否收盤，並考慮週末和假日
+    """
+    now = datetime.now(TW_TIMEZONE)
+    
+    # 如果是週末，返回上週五的日期
+    if now.weekday() >= 5:  # 5 = 週六, 6 = 週日
+        days_to_subtract = now.weekday() - 4  # 計算到上週五的天數
+        last_trading_day = now - timedelta(days=days_to_subtract)
+        return last_trading_day.strftime(format)
+    
+    # 如果當日市場已收盤，返回當日日期
+    if is_taiwan_market_closed():
+        return now.strftime(format)
+    else:
+        # 如果市場尚未收盤，返回上一個交易日
+        if now.weekday() == 0:  # 週一
+            last_trading_day = now - timedelta(days=3)  # 返回上週五
+        else:
+            last_trading_day = now - timedelta(days=1)  # 返回昨天
+        return last_trading_day.strftime(format)
 
 def is_trading_day():
     """
