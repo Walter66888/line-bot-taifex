@@ -1,5 +1,5 @@
 """
-工具函數模組 - 更新版
+工具函數模組 - 完整版
 """
 import logging
 from datetime import datetime, timedelta
@@ -369,8 +369,382 @@ def generate_full_report(report):
         logger.error(f"生成完整市場報告時發生錯誤: {str(e)}")
         return None
 
-# 以下保留原有的其他函數，如 generate_taiex_report(), generate_institutional_report() 等...
-# 省略其他函數，這些函數邏輯保持不變
+def generate_taiex_report(report):
+    """
+    生成加權指數報告
+    
+    Args:
+        report: 市場報告資料
+        
+    Returns:
+        str: 格式化後的加權指數報告
+    """
+    try:
+        # 取得報告日期和星期
+        date_string = report.get('date_string', '')
+        weekday = report.get('weekday', '')
+        
+        # 加權指數資料
+        taiex = report.get('taiex', {})
+        taiex_close = taiex.get('close', 0)
+        taiex_change = taiex.get('change', 0)
+        taiex_change_percent = taiex.get('change_percent', 0)
+        taiex_volume = taiex.get('volume', 0)
+        
+        # 期貨資料
+        futures = report.get('futures', {})
+        futures_close = futures.get('close', 0)
+        futures_change = futures.get('change', 0)
+        futures_change_percent = futures.get('change_percent', 0)
+        futures_bias = futures.get('bias', 0)
+        
+        # 生成報告文字
+        report_text = f"📊 [加權指數報告] {date_string} ({weekday})\n\n"
+        
+        # 加權指數
+        report_text += f"📈 加權指數\n"
+        report_text += f"{taiex_close:,.2f} "
+        if taiex_change > 0:
+            report_text += f"▲{abs(taiex_change):,.2f}"
+        elif taiex_change < 0:
+            report_text += f"▼{abs(taiex_change):,.2f}"
+        else:
+            report_text += "—"
+        report_text += f" ({abs(taiex_change_percent):,.2f}%) 成交金額: {taiex_volume:,.2f}億元\n\n"
+        
+        # 台指期(近月)
+        report_text += f"📉 台指期(近月)\n"
+        report_text += f"{futures_close:,.0f} "
+        if futures_change > 0:
+            report_text += f"▲{abs(futures_change):,.0f}"
+        elif futures_change < 0:
+            report_text += f"▼{abs(futures_change):,.0f}"
+        else:
+            report_text += "—"
+        report_text += f" ({abs(futures_change_percent):,.2f}%) 現貨與期貨差: {futures_bias:,.2f}\n"
+        
+        return report_text
+    
+    except Exception as e:
+        logger.error(f"生成加權指數報告時發生錯誤: {str(e)}")
+        return None
+
+def generate_institutional_report(report):
+    """
+    生成三大法人報告
+    
+    Args:
+        report: 市場報告資料
+        
+    Returns:
+        str: 格式化後的三大法人報告
+    """
+    try:
+        # 取得報告日期和星期
+        date_string = report.get('date_string', '')
+        weekday = report.get('weekday', '')
+        
+        # 三大法人資料
+        institutional = report.get('institutional', {})
+        total = institutional.get('total', 0)
+        foreign = institutional.get('foreign', 0)
+        investment_trust = institutional.get('investment_trust', 0)
+        dealer = institutional.get('dealer', 0)
+        dealer_self = institutional.get('dealer_self', 0)
+        dealer_hedge = institutional.get('dealer_hedge', 0)
+        
+        # 連續買賣超天數
+        foreign_consecutive_days = institutional.get('foreign_consecutive_days', 0)
+        investment_trust_consecutive_days = institutional.get('investment_trust_consecutive_days', 0)
+        dealer_consecutive_days = institutional.get('dealer_consecutive_days', 0)
+        
+        # 生成報告文字
+        report_text = f"👥 [三大法人買賣超報告] {date_string} ({weekday})\n\n"
+        
+        # 三大法人買賣超
+        report_text += f"三大法人合計: "
+        if total > 0:
+            report_text += f"+{total:,.2f}"
+        else:
+            report_text += f"{total:,.2f}"
+        report_text += "億元\n\n"
+        
+        # 外資
+        report_text += f"外資買賣超: "
+        if foreign > 0:
+            report_text += f"+{foreign:,.2f}"
+        else:
+            report_text += f"{foreign:,.2f}"
+        report_text += "億元"
+        if foreign_consecutive_days != 0:
+            if foreign_consecutive_days > 0:
+                report_text += f" (連{foreign_consecutive_days}天買超)"
+            else:
+                report_text += f" (連{abs(foreign_consecutive_days)}天賣超)"
+        report_text += "\n\n"
+        
+        # 投信
+        report_text += f"投信買賣超: "
+        if investment_trust > 0:
+            report_text += f"+{investment_trust:,.2f}"
+        else:
+            report_text += f"{investment_trust:,.2f}"
+        report_text += "億元"
+        if investment_trust_consecutive_days != 0:
+            if investment_trust_consecutive_days > 0:
+                report_text += f" (連{investment_trust_consecutive_days}天買超)"
+            else:
+                report_text += f" (連{abs(investment_trust_consecutive_days)}天賣超)"
+        report_text += "\n\n"
+        
+        # 自營商
+        report_text += f"自營商買賣超: "
+        if dealer > 0:
+            report_text += f"+{dealer:,.2f}"
+        else:
+            report_text += f"{dealer:,.2f}"
+        report_text += "億元"
+        if dealer_consecutive_days != 0:
+            if dealer_consecutive_days > 0:
+                report_text += f" (連{dealer_consecutive_days}天買超)"
+            else:
+                report_text += f" (連{abs(dealer_consecutive_days)}天賣超)"
+        report_text += "\n"
+        
+        # 自營商細項
+        report_text += f"  自營商(自行): "
+        if dealer_self > 0:
+            report_text += f"+{dealer_self:,.2f}"
+        else:
+            report_text += f"{dealer_self:,.2f}"
+        report_text += "億元\n"
+        
+        report_text += f"  自營商(避險): "
+        if dealer_hedge > 0:
+            report_text += f"+{dealer_hedge:,.2f}"
+        else:
+            report_text += f"{dealer_hedge:,.2f}"
+        report_text += "億元\n"
+        
+        return report_text
+    
+    except Exception as e:
+        logger.error(f"生成三大法人報告時發生錯誤: {str(e)}")
+        return None
+
+def generate_futures_report(report):
+    """
+    生成期貨籌碼報告
+    
+    Args:
+        report: 市場報告資料
+        
+    Returns:
+        str: 格式化後的期貨籌碼報告
+    """
+    try:
+        # 取得報告日期和星期
+        date_string = report.get('date_string', '')
+        weekday = report.get('weekday', '')
+        
+        # 期貨持倉資料
+        futures_positions = report.get('futures_positions', {})
+        foreign_tx_net = futures_positions.get('foreign_tx_net', 0)
+        foreign_tx_net_change = futures_positions.get('foreign_tx_net_change', 0)
+        foreign_mtx_net = futures_positions.get('foreign_mtx_net', 0)
+        foreign_mtx_net_change = futures_positions.get('foreign_mtx_net_change', 0)
+        foreign_call_net = futures_positions.get('foreign_call_net', 0)
+        foreign_call_net_change = futures_positions.get('foreign_call_net_change', 0)
+        foreign_put_net = futures_positions.get('foreign_put_net', 0)
+        foreign_put_net_change = futures_positions.get('foreign_put_net_change', 0)
+        top10_traders_net = futures_positions.get('top10_traders_net', 0)
+        top10_traders_net_change = futures_positions.get('top10_traders_net_change', 0)
+        top10_specific_net = futures_positions.get('top10_specific_net', 0)
+        top10_specific_net_change = futures_positions.get('top10_specific_net_change', 0)
+        
+        # 生成報告文字
+        report_text = f"🔄 [期貨籌碼報告] {date_string} ({weekday})\n\n"
+        
+        # 期貨籌碼
+        report_text += f"外資台指淨未平倉(口): "
+        if foreign_tx_net > 0:
+            report_text += f"+{foreign_tx_net:,}"
+        else:
+            report_text += f"{foreign_tx_net:,}"
+        
+        if foreign_tx_net_change != 0:
+            report_text += " ("
+            if foreign_tx_net_change > 0:
+                report_text += f"+{foreign_tx_net_change:,}"
+            else:
+                report_text += f"{foreign_tx_net_change:,}"
+            report_text += ")"
+        report_text += "\n\n"
+        
+        report_text += f"外資小台指淨未平倉(口): "
+        if foreign_mtx_net > 0:
+            report_text += f"+{foreign_mtx_net:,}"
+        else:
+            report_text += f"{foreign_mtx_net:,}"
+        
+        if foreign_mtx_net_change != 0:
+            report_text += " ("
+            if foreign_mtx_net_change > 0:
+                report_text += f"+{foreign_mtx_net_change:,}"
+            else:
+                report_text += f"{foreign_mtx_net_change:,}"
+            report_text += ")"
+        report_text += "\n\n"
+        
+        report_text += f"外資買權淨未平倉(口): "
+        if foreign_call_net > 0:
+            report_text += f"+{foreign_call_net:,}"
+        else:
+            report_text += f"{foreign_call_net:,}"
+        
+        if foreign_call_net_change != 0:
+            report_text += " ("
+            if foreign_call_net_change > 0:
+                report_text += f"+{foreign_call_net_change:,}"
+            else:
+                report_text += f"{foreign_call_net_change:,}"
+            report_text += ")"
+        report_text += "\n\n"
+        
+        report_text += f"外資賣權淨未平倉(口): "
+        if foreign_put_net > 0:
+            report_text += f"+{foreign_put_net:,}"
+        else:
+            report_text += f"{foreign_put_net:,}"
+        
+        if foreign_put_net_change != 0:
+            report_text += " ("
+            if foreign_put_net_change > 0:
+                report_text += f"+{foreign_put_net_change:,}"
+            else:
+                report_text += f"{foreign_put_net_change:,}"
+            report_text += ")"
+        report_text += "\n\n"
+        
+        report_text += f"十大交易人淨未平倉(口): "
+        if top10_traders_net > 0:
+            report_text += f"+{top10_traders_net:,}"
+        else:
+            report_text += f"{top10_traders_net:,}"
+        
+        if top10_traders_net_change != 0:
+            report_text += " ("
+            if top10_traders_net_change > 0:
+                report_text += f"+{top10_traders_net_change:,}"
+            else:
+                report_text += f"{top10_traders_net_change:,}"
+            report_text += ")"
+        report_text += "\n\n"
+        
+        report_text += f"十大特定法人淨未平倉(口): "
+        if top10_specific_net > 0:
+            report_text += f"+{top10_specific_net:,}"
+        else:
+            report_text += f"{top10_specific_net:,}"
+        
+        if top10_specific_net_change != 0:
+            report_text += " ("
+            if top10_specific_net_change > 0:
+                report_text += f"+{top10_specific_net_change:,}"
+            else:
+                report_text += f"{top10_specific_net_change:,}"
+            report_text += ")"
+        report_text += "\n"
+        
+        return report_text
+    
+    except Exception as e:
+        logger.error(f"生成期貨籌碼報告時發生錯誤: {str(e)}")
+        return None
+
+def generate_retail_report(report):
+    """
+    生成散戶籌碼報告
+    
+    Args:
+        report: 市場報告資料
+        
+    Returns:
+        str: 格式化後的散戶籌碼報告
+    """
+    try:
+        # 取得報告日期和星期
+        date_string = report.get('date_string', '')
+        weekday = report.get('weekday', '')
+        
+        # 散戶持倉資料
+        retail_positions = report.get('retail_positions', {})
+        mtx_net = retail_positions.get('mtx_net', 0)
+        mtx_net_change = retail_positions.get('mtx_net_change', 0)
+        xmtx_net = retail_positions.get('xmtx_net', 0)
+        xmtx_net_change = retail_positions.get('xmtx_net_change', 0)
+        
+        # 市場指標
+        market_indicators = report.get('market_indicators', {})
+        mtx_retail_ratio = market_indicators.get('mtx_retail_ratio', 0)
+        mtx_retail_ratio_prev = market_indicators.get('mtx_retail_ratio_prev', 0)
+        xmtx_retail_ratio = market_indicators.get('xmtx_retail_ratio', 0)
+        xmtx_retail_ratio_prev = market_indicators.get('xmtx_retail_ratio_prev', 0)
+        put_call_ratio = market_indicators.get('put_call_ratio', 0)
+        put_call_ratio_prev = market_indicators.get('put_call_ratio_prev', 0)
+        vix = market_indicators.get('vix', 0)
+        vix_prev = market_indicators.get('vix_prev', 0)
+        
+        # 處理PC Ratio異常值
+        put_call_ratio = normalize_pc_ratio(put_call_ratio)
+        put_call_ratio_prev = normalize_pc_ratio(put_call_ratio_prev)
+        
+        # 生成報告文字
+        report_text = f"👨‍💼 [散戶籌碼報告] {date_string} ({weekday})\n\n"
+        
+        # 散戶籌碼
+        report_text += f"散戶小台淨未平倉(口): "
+        if mtx_net > 0:
+            report_text += f"+{mtx_net:,}"
+        else:
+            report_text += f"{mtx_net:,}"
+        
+        if mtx_net_change != 0:
+            report_text += " ("
+            if mtx_net_change > 0:
+                report_text += f"+{mtx_net_change:,}"
+            else:
+                report_text += f"{mtx_net_change:,}"
+            report_text += ")"
+        report_text += "\n\n"
+        
+        report_text += f"散戶微台淨未平倉(口): "
+        if xmtx_net > 0:
+            report_text += f"+{xmtx_net:,}"
+        else:
+            report_text += f"{xmtx_net:,}"
+        
+        if xmtx_net_change != 0:
+            report_text += " ("
+            if xmtx_net_change > 0:
+                report_text += f"+{xmtx_net_change:,}"
+            else:
+                report_text += f"{xmtx_net_change:,}"
+            report_text += ")"
+        report_text += "\n\n"
+        
+        # 市場氛圍指標
+        report_text += f"🌡️ 市場氛圍指標\n"
+        report_text += f"小台散戶多空比: 今日 {mtx_retail_ratio:,.2f}% / 昨日 {mtx_retail_ratio_prev:,.2f}%\n\n"
+        report_text += f"微台散戶多空比: 今日 {xmtx_retail_ratio:,.2f}% / 昨日 {xmtx_retail_ratio_prev:,.2f}%\n\n"
+        report_text += f"全市場Put/Call Ratio: 今日 {put_call_ratio:,.2f}% / 昨日 {put_call_ratio_prev:,.2f}%\n\n"
+        report_text += f"VIX指標: 今日 {vix:,.2f} / 昨日 {vix_prev:,.2f}\n"
+        
+        return report_text
+    
+    except Exception as e:
+        logger.error(f"生成散戶籌碼報告時發生錯誤: {str(e)}")
+        return None
 
 def normalize_pc_ratio(value):
     """處理PC Ratio可能的異常值"""
@@ -538,6 +912,3 @@ def is_trading_day():
     # 例如: 國定假日、特殊休市日等
     
     return True
-
-# 注意：這個文件中的其他功能（如 generate_taiex_report, generate_institutional_report 等）
-# 應該保持原樣，不需要修改，因為它們只是讀取資料庫中已存在的數據，不直接與爬蟲模組互動。
