@@ -16,9 +16,8 @@ from crawler.futures import get_futures_data
 from crawler.institutional import get_institutional_investors_data
 from crawler.pc_ratio import get_pc_ratio
 from crawler.vix import get_vix_data
-# 暫時註解掉缺少的模組，等添加文件後再恢復
-# from crawler.top_traders import get_top_traders_data
-# from crawler.option_positions import get_option_positions_data
+from crawler.top_traders import get_top_traders_data
+from crawler.option_positions import get_option_positions_data
 from database.mongodb import (
     save_market_report, 
     update_consecutive_days, 
