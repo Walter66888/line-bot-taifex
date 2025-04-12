@@ -1,19 +1,26 @@
 """
-LINE BOT主應用程式
+LINE BOT主應用程式 - 改進版
 """
 import os
 import logging
 from datetime import datetime
+import pytz
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage, 
+    SourceUser, SourceGroup, SourceRoom
+)
 
-from crawler.taiex import get_taiex_data
-from crawler.futures import get_futures_data
-from crawler.institutional import get_institutional_investors_data
-from crawler.pc_ratio import get_pc_ratio
-from crawler.vix import get_vix_data
+from database.mongodb import (
+    get_db, save_user_info, save_group_info, 
+    is_user_authorized, is_group_authorized,
+    get_latest_market_report, get_market_report_by_date,
+    save_push_log
+)
+from utils import generate_market_report, generate_taiex_report, generate_institutional_report, generate_futures_report, generate_retail_report
+from scheduler.market_data import start_scheduler_thread
 
 # 設定日誌
 logging.basicConfig(
@@ -21,6 +28,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 設定台灣時區
+TW_TIMEZONE = pytz.timezone('Asia/Taipei')
 
 app = Flask(__name__)
 
@@ -35,149 +45,31 @@ except Exception as e:
         class DummyLineBotApi:
             def reply_message(self, *args, **kwargs):
                 logger.info(f"DUMMY: reply_message({args}, {kwargs})")
+            
+            def push_message(self, *args, **kwargs):
+                logger.info(f"DUMMY: push_message({args}, {kwargs})")
+        
+        class DummyWebhookHandler:
+            def add(self, *args, **kwargs):
+                pass
+            
+            def handle(self, *args, **kwargs):
+                pass
+        
         line_bot_api = DummyLineBotApi()
-        handler = None
+        handler = DummyWebhookHandler()
     else:
         raise
 
-# 用戶認證
-authorized_users = [user.strip() for user in os.environ.get('AUTHORIZED_USERS', '').split(',') if user.strip()]
-authorized_groups = [group.strip() for group in os.environ.get('AUTHORIZED_GROUPS', '').split(',') if group.strip()]
+# 初始化資料庫連接
+db = get_db()
+if not db:
+    logger.warning("無法連接到資料庫，某些功能可能不可用")
 
-# 快取市場報告
-cached_report = None
-cached_report_date = None
-
-def format_market_report(taiex_data, futures_data, institutional_data, pc_ratio_data, vix_data, retail_indicators):
-    """
-    格式化市場報告
-    
-    Args:
-        taiex_data: 加權指數數據
-        futures_data: 期貨數據
-        institutional_data: 三大法人數據
-        pc_ratio_data: PC Ratio數據
-        vix_data: VIX指標數據
-        retail_indicators: 散戶指標數據
-        
-    Returns:
-        str: 格式化後的市場報告
-    """
-    date_str = datetime.now().strftime('%Y/%m/%d')
-    
-    # 處理None值
-    if not taiex_data:
-        taiex_data = {'close': 0.0, 'change': 0.0, 'change_percent': 0.0, 'volume': 0.0}
-    if not futures_data:
-        futures_data = {'close': 0.0, 'change': 0.0, 'change_percent': 0.0, 'bias': 0.0}
-    if not institutional_data:
-        institutional_data = {'total': 0.0, 'foreign': 0.0, 'investment_trust': 0.0, 'dealer': 0.0, 'dealer_self': 0.0, 'dealer_hedge': 0.0}
-    if not pc_ratio_data:
-        pc_ratio_data = {'vol_ratio': 0.0, 'oi_ratio': 0.0}
-    if not retail_indicators:
-        retail_indicators = {'mtx': 0.0, 'xmtx': 0.0}
-    
-    report = f"[盤後籌碼快報] {date_str}\n\n"
-    
-    # 加權指數
-    report += f"加權指數\n"
-    report += f"{taiex_data['close']:.2f} {'▲' if taiex_data['change'] > 0 else '▼'}{abs(taiex_data['change']):.2f} ({abs(taiex_data['change_percent']):.2f}%) {taiex_data['volume']:.2f}億元\n\n"
-    
-    # 台指期(近)
-    report += f"台指期(近)\n"
-    report += f"{futures_data['close']:.2f} {'▲' if futures_data['change'] > 0 else '▼'}{abs(futures_data['change']):.2f} ({abs(futures_data['change_percent']):.2f}%) {futures_data['bias']:.2f} (偏差)\n\n"
-    
-    # 三大法人現貨買賣超(億元)
-    report += f"三大法人現貨買賣超(億元)\n"
-    report += f"合計: {'+' if institutional_data['total'] > 0 else ''}{institutional_data['total']:.2f}\n"
-    report += f"外資: {'+' if institutional_data['foreign'] > 0 else ''}{institutional_data['foreign']:.2f}\n"
-    report += f"投信: {'+' if institutional_data['investment_trust'] > 0 else ''}{institutional_data['investment_trust']:.2f}\n"
-    report += f"自營商: {'+' if institutional_data['dealer'] > 0 else ''}{institutional_data['dealer']:.2f}\n"
-    report += f"  自營商: {'+' if institutional_data['dealer_self'] > 0 else ''}{institutional_data['dealer_self']:.2f}\n"
-    report += f"  避險: {'+' if institutional_data['dealer_hedge'] > 0 else ''}{institutional_data['dealer_hedge']:.2f}\n\n"
-    
-    # 外資及大額交易人期貨(口)
-    report += f"外資及大額交易人期貨(口)\n"
-    report += f"外資台指期: {'+' if futures_data.get('foreign_tx', 0) > 0 else ''}{futures_data.get('foreign_tx', 0)}\n"
-    report += f"外資小台指: {'+' if futures_data.get('foreign_mtx', 0) > 0 else ''}{futures_data.get('foreign_mtx', 0)}\n"
-    
-    # 其他指標
-    report += f"其他指標\n"
-    report += f"小台散戶指標: {retail_indicators['mtx']:.2f}%\n"
-    report += f"微台散戶指標: {retail_indicators['xmtx']:.2f}%\n"
-    report += f"PC ratio 未平倉比: {pc_ratio_data['oi_ratio']:.2f}\n"
-    report += f"VIX指標: {vix_data:.2f}\n"
-    
-    return report
-
-def get_market_report():
-    """
-    獲取最新市場報告，使用快取提高效率
-    
-    Returns:
-        str: 市場報告
-    """
-    global cached_report, cached_report_date
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    # 如果今天已經生成過報告，則直接使用快取
-    if cached_report and cached_report_date == today:
-        return cached_report
-    
-    # 否則生成新的報告
-    try:
-        logger.info("開始獲取市場數據...")
-        
-        taiex_data = get_taiex_data()
-        logger.info(f"獲取加權指數數據: {taiex_data}")
-        
-        futures_data = get_futures_data()
-        logger.info(f"獲取期貨數據: {futures_data}")
-        
-        institutional_data = get_institutional_investors_data()
-        logger.info(f"獲取三大法人數據: {institutional_data}")
-        
-        pc_ratio_data = get_pc_ratio()
-        logger.info(f"獲取PC Ratio數據: {pc_ratio_data}")
-        
-        vix_data = get_vix_data()
-        logger.info(f"獲取VIX指標數據: {vix_data}")
-        
-        # 計算散戶指標
-        mtx_institutional_net = futures_data.get('mtx_dealer_net', 0) + futures_data.get('mtx_it_net', 0) + futures_data.get('mtx_foreign_net', 0)
-        mtx_oi = futures_data.get('mtx_oi', 1)  # 避免除以零
-        mtx_retail_indicator = -mtx_institutional_net / mtx_oi * 100 if mtx_oi > 0 else 0.0
-        
-        xmtx_institutional_net = futures_data.get('xmtx_dealer_net', 0) + futures_data.get('xmtx_it_net', 0) + futures_data.get('xmtx_foreign_net', 0)
-        xmtx_oi = futures_data.get('xmtx_oi', 1)  # 避免除以零
-        xmtx_retail_indicator = -xmtx_institutional_net / xmtx_oi * 100 if xmtx_oi > 0 else 0.0
-        
-        retail_indicators = {
-            'mtx': mtx_retail_indicator,
-            'xmtx': xmtx_retail_indicator
-        }
-        logger.info(f"計算散戶指標: {retail_indicators}")
-        
-        # 格式化報告
-        report = format_market_report(
-            taiex_data, 
-            futures_data, 
-            institutional_data, 
-            pc_ratio_data, 
-            vix_data, 
-            retail_indicators
-        )
-        
-        # 更新快取
-        cached_report = report
-        cached_report_date = today
-        
-        logger.info("市場報告生成完成")
-        return report
-    except Exception as e:
-        logger.error(f"獲取市場報告時發生錯誤: {str(e)}")
-        return f"獲取市場報告時發生錯誤: {str(e)}"
+# 啟動排程器
+if os.environ.get('ENABLE_SCHEDULER', 'true').lower() == 'true':
+    start_scheduler_thread(line_bot_api)
+    logger.info("已啟動市場數據排程器")
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -205,50 +97,264 @@ def callback():
 def handle_message(event):
     """處理用戶發送的文字訊息"""
     text = event.message.text.strip()
-    user_id = event.source.user_id
+    source_type = event.source.type
+    reply_token = event.reply_token
     
-    # 來源類型檢查
-    if event.source.type == 'user':
-        source_id = user_id
-        allowed_ids = authorized_users
-    elif event.source.type == 'group':
+    # 取得發送者ID
+    if source_type == 'user':
+        source_id = event.source.user_id
+        # 儲存或更新用戶資訊
+        try:
+            profile = line_bot_api.get_profile(source_id)
+            save_user_info(source_id, profile.display_name)
+        except Exception as e:
+            logger.error(f"獲取用戶資訊時出錯: {str(e)}")
+    elif source_type == 'group':
         source_id = event.source.group_id
-        allowed_ids = authorized_groups
-    elif event.source.type == 'room':
+        # 儲存或更新群組資訊
+        try:
+            # 目前LINE API無法獲取群組名稱，所以只存ID
+            save_group_info(source_id)
+        except Exception as e:
+            logger.error(f"儲存群組資訊時出錯: {str(e)}")
+    elif source_type == 'room':
         source_id = event.source.room_id
-        allowed_ids = authorized_groups
+        # 聊天室也視為群組處理
+        try:
+            save_group_info(source_id)
+        except Exception as e:
+            logger.error(f"儲存聊天室資訊時出錯: {str(e)}")
     else:
         source_id = None
-        allowed_ids = []
     
-    # 權限檢查
-    if allowed_ids and source_id not in allowed_ids:
-        logger.warning(f"未授權的用戶/群組: {source_id}")
+    # 記錄請求
+    logger.info(f"收到訊息: {text}，來源: {source_type}, ID: {source_id}")
+    
+    # 權限檢查 (如果啟用了資料庫)
+    if db:
+        authorized = False
+        if source_type == 'user':
+            authorized = is_user_authorized(source_id)
+        elif source_type in ['group', 'room']:
+            authorized = is_group_authorized(source_id)
+        
+        if not authorized:
+            # 未授權的用戶或群組，建立資料並授予默認權限
+            if source_type == 'user':
+                try:
+                    profile = line_bot_api.get_profile(source_id)
+                    save_user_info(source_id, profile.display_name)
+                    authorized = True
+                except Exception as e:
+                    logger.error(f"授權新用戶時出錯: {str(e)}")
+            elif source_type in ['group', 'room']:
+                try:
+                    save_group_info(source_id)
+                    authorized = True
+                except Exception as e:
+                    logger.error(f"授權新群組時出錯: {str(e)}")
+    else:
+        # 資料庫未連接時不做權限檢查
+        authorized = True
+    
+    # 處理被加入好友或群組的情況
+    if text == "":
+        welcome_message = (
+            "您好！我是台股籌碼快報機器人。\n\n"
+            "您可以透過以下指令來使用我：\n"
+            "- 輸入「籌碼快報」獲取今日完整籌碼報告\n"
+            "- 輸入「加權指數」獲取今日加權指數資訊\n"
+            "- 輸入「三大法人」獲取今日三大法人買賣超資訊\n"
+            "- 輸入「期貨籌碼」獲取今日期貨籌碼資訊\n"
+            "- 輸入「散戶籌碼」獲取今日散戶籌碼資訊\n"
+            "- 輸入「籌碼說明」查看使用說明\n\n"
+            "每天盤後約 14:45-14:50 會自動更新當日資料。"
+        )
         line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="抱歉，您沒有使用權限。")
+            reply_token,
+            TextSendMessage(text=welcome_message)
         )
         return
     
-    # 命令處理
-    if text in ['最新籌碼快報', '籌碼快報']:
+    # 處理命令
+    if '籌碼快報' in text:
         logger.info(f"用戶 {source_id} 請求籌碼快報")
-        report = get_market_report()
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=report)
-        )
-    elif '籌碼' in text and ('幫助' in text or '說明' in text):
+        
+        # 生成市場報告
+        report_text = generate_market_report()
+        if report_text:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=report_text)
+            )
+            
+            # 記錄推送日誌
+            if db:
+                target_type = 'user' if source_type == 'user' else 'group'
+                save_push_log(
+                    target_type=target_type,
+                    target_id=source_id,
+                    report_date=datetime.now(TW_TIMEZONE).date(),
+                    status='success',
+                    message_type='full_report'
+                )
+        else:
+            error_message = "抱歉，目前無法獲取籌碼快報，請稍後再試。"
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=error_message)
+            )
+    
+    elif '加權指數' in text:
+        logger.info(f"用戶 {source_id} 請求加權指數資訊")
+        
+        # 生成加權指數報告
+        report_text = generate_taiex_report(get_latest_market_report())
+        if report_text:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=report_text)
+            )
+            
+            # 記錄推送日誌
+            if db:
+                target_type = 'user' if source_type == 'user' else 'group'
+                save_push_log(
+                    target_type=target_type,
+                    target_id=source_id,
+                    report_date=datetime.now(TW_TIMEZONE).date(),
+                    status='success',
+                    message_type='taiex_report'
+                )
+        else:
+            error_message = "抱歉，目前無法獲取加權指數資訊，請稍後再試。"
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=error_message)
+            )
+    
+    elif '三大法人' in text:
+        logger.info(f"用戶 {source_id} 請求三大法人資訊")
+        
+        # 生成三大法人報告
+        report_text = generate_institutional_report(get_latest_market_report())
+        if report_text:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=report_text)
+            )
+            
+            # 記錄推送日誌
+            if db:
+                target_type = 'user' if source_type == 'user' else 'group'
+                save_push_log(
+                    target_type=target_type,
+                    target_id=source_id,
+                    report_date=datetime.now(TW_TIMEZONE).date(),
+                    status='success',
+                    message_type='institutional_report'
+                )
+        else:
+            error_message = "抱歉，目前無法獲取三大法人資訊，請稍後再試。"
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=error_message)
+            )
+    
+    elif '期貨籌碼' in text:
+        logger.info(f"用戶 {source_id} 請求期貨籌碼資訊")
+        
+        # 生成期貨籌碼報告
+        report_text = generate_futures_report(get_latest_market_report())
+        if report_text:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=report_text)
+            )
+            
+            # 記錄推送日誌
+            if db:
+                target_type = 'user' if source_type == 'user' else 'group'
+                save_push_log(
+                    target_type=target_type,
+                    target_id=source_id,
+                    report_date=datetime.now(TW_TIMEZONE).date(),
+                    status='success',
+                    message_type='futures_report'
+                )
+        else:
+            error_message = "抱歉，目前無法獲取期貨籌碼資訊，請稍後再試。"
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=error_message)
+            )
+    
+    elif '散戶籌碼' in text:
+        logger.info(f"用戶 {source_id} 請求散戶籌碼資訊")
+        
+        # 生成散戶籌碼報告
+        report_text = generate_retail_report(get_latest_market_report())
+        if report_text:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=report_text)
+            )
+            
+            # 記錄推送日誌
+            if db:
+                target_type = 'user' if source_type == 'user' else 'group'
+                save_push_log(
+                    target_type=target_type,
+                    target_id=source_id,
+                    report_date=datetime.now(TW_TIMEZONE).date(),
+                    status='success',
+                    message_type='retail_report'
+                )
+        else:
+            error_message = "抱歉，目前無法獲取散戶籌碼資訊，請稍後再試。"
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=error_message)
+            )
+    
+    elif ('籌碼' in text and ('幫助' in text or '說明' in text)):
         help_text = (
-            "籌碼快報使用指南:\n\n"
-            "- 輸入「最新籌碼快報」或「籌碼快報」獲取完整報告\n"
-            "- 其他功能正在開發中...\n"
+            "📊 籌碼快報使用說明 📊\n\n"
+            "主要功能：\n"
+            "- 輸入「籌碼快報」獲取今日完整籌碼報告\n"
+            "- 輸入「加權指數」獲取今日加權指數資訊\n"
+            "- 輸入「三大法人」獲取今日三大法人買賣超資訊\n"
+            "- 輸入「期貨籌碼」獲取今日期貨籌碼資訊\n"
+            "- 輸入「散戶籌碼」獲取今日散戶籌碼資訊\n\n"
+            "時間說明：\n"
+            "- 每天盤後約 14:45-14:50 自動更新當日資料\n"
+            "- 已設定自動推送的群組會在更新後自動收到通知\n\n"
+            "🔹 籌碼數據來源：台灣期貨交易所、台灣證券交易所\n"
+            "🔹 更多功能陸續開發中，敬請期待！"
         )
         line_bot_api.reply_message(
-            event.reply_token,
+            reply_token,
             TextSendMessage(text=help_text)
         )
+    
     # 其他命令...
+    else:
+        # 如果沒有匹配的命令，提供幫助訊息
+        help_text = (
+            "您好！我是台股籌碼快報機器人。\n\n"
+            "您可以透過以下指令來使用我：\n"
+            "- 輸入「籌碼快報」獲取今日完整籌碼報告\n"
+            "- 輸入「加權指數」獲取今日加權指數資訊\n"
+            "- 輸入「三大法人」獲取今日三大法人買賣超資訊\n"
+            "- 輸入「期貨籌碼」獲取今日期貨籌碼資訊\n"
+            "- 輸入「散戶籌碼」獲取今日散戶籌碼資訊\n"
+            "- 輸入「籌碼說明」查看使用說明\n\n"
+            "每天盤後約 14:45-14:50 會自動更新當日資料。"
+        )
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text=help_text)
+        )
 
 @app.route("/", methods=['GET'])
 def index():
@@ -261,7 +367,7 @@ def test():
     if os.environ.get('FLASK_ENV') != 'development':
         return "Test endpoint is disabled in production", 403
     
-    report = get_market_report()
+    report = generate_market_report()
     return f"<pre>{report}</pre>"
 
 if __name__ == "__main__":
