@@ -1,9 +1,12 @@
 """
-期貨相關資料爬蟲模組 - 改進版
+期貨相關資料爬蟲模組 - 全面改進版
 """
 import logging
 import requests
+import json
+import re
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 from .utils import get_tw_stock_date, safe_float, safe_int, get_html_content
 from .taiex import get_taiex_data
 
@@ -29,6 +32,13 @@ def get_futures_data():
         
         # 獲取三大法人期貨部位數據
         institutional_futures = get_institutional_futures_data(date)
+        
+        # 嘗試使用替代方法獲取期貨部位數據（如果上面的方法返回全部為零）
+        if all(value == 0 for key, value in institutional_futures.items() if key != 'date'):
+            alternative_futures = get_institutional_futures_alternative(date)
+            if alternative_futures:
+                institutional_futures = alternative_futures
+                logger.info("使用替代方法成功獲取期貨部位數據")
         
         # 合併數據
         result = {**tx_data, **institutional_futures}
@@ -61,10 +71,13 @@ def get_tx_futures_data(date, taiex_close=0):
     """
     try:
         # 使用改進的URL格式
-        url = f"https://www.taifex.com.tw/cht/3/futDailyMarketReport"
+        url = "https://www.taifex.com.tw/cht/3/futDailyMarketReport"
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://www.taifex.com.tw/cht/3/futDailyMarketReport'
         }
         
         # 使用POST方法，提供查詢參數
@@ -92,6 +105,10 @@ def get_tx_futures_data(date, taiex_close=0):
         tables = soup.find_all('table', class_='table_f')
         if not tables or len(tables) < 1:
             logger.error("找不到台指期貨表格")
+            # 嘗試使用替代方法
+            alternative_data = get_tx_futures_data_alternative(date, taiex_close)
+            if alternative_data and alternative_data.get('close', 0) > 0:
+                return alternative_data
             return default_tx_data(taiex_close)
         
         # 獲取資料表格
@@ -117,6 +134,10 @@ def get_tx_futures_data(date, taiex_close=0):
         
         if not tx_row:
             logger.error("找不到近月台指期貨合約")
+            # 嘗試使用替代方法
+            alternative_data = get_tx_futures_data_alternative(date, taiex_close)
+            if alternative_data and alternative_data.get('close', 0) > 0:
+                return alternative_data
             return default_tx_data(taiex_close)
         
         # 解析數據
@@ -129,19 +150,19 @@ def get_tx_futures_data(date, taiex_close=0):
             change_text = tx_row[6].text.strip().replace(',', '')
             change_value = 0.0
             if change_text and change_text != '--':
-                if '▲' in change_text:
-                    change_value = safe_float(change_text.replace('▲', ''))
-                elif '▼' in change_text:
-                    change_value = -safe_float(change_text.replace('▼', ''))
+                if '▲' in change_text or '+' in change_text:
+                    change_value = safe_float(change_text.replace('▲', '').replace('+', ''))
+                elif '▼' in change_text or '-' in change_text:
+                    change_value = -safe_float(change_text.replace('▼', '').replace('-', ''))
             
             # 漲跌百分比通常在第8列（索引7）
             change_percent_text = tx_row[7].text.strip().replace(',', '')
             change_percent = 0.0
             if change_percent_text and change_percent_text != '--':
-                if '▲' in change_percent_text:
-                    change_percent = safe_float(change_percent_text.replace('▲', '').replace('%', ''))
-                elif '▼' in change_percent_text:
-                    change_percent = -safe_float(change_percent_text.replace('▼', '').replace('%', ''))
+                if '▲' in change_percent_text or '+' in change_percent_text:
+                    change_percent = safe_float(change_percent_text.replace('▲', '').replace('+', '').replace('%', ''))
+                elif '▼' in change_percent_text or '-' in change_percent_text:
+                    change_percent = -safe_float(change_percent_text.replace('▼', '').replace('-', '').replace('%', ''))
             
             logger.info(f"台指期貨: 收盤價={close_price}, 漲跌={change_value}, 漲跌%={change_percent}")
             
@@ -154,10 +175,80 @@ def get_tx_futures_data(date, taiex_close=0):
             }
         except Exception as e:
             logger.error(f"解析台指期貨數據時出錯: {str(e)}")
+            # 嘗試使用替代方法
+            alternative_data = get_tx_futures_data_alternative(date, taiex_close)
+            if alternative_data and alternative_data.get('close', 0) > 0:
+                return alternative_data
             return default_tx_data(taiex_close)
     
     except Exception as e:
         logger.error(f"獲取台指期貨數據時出錯: {str(e)}")
+        # 嘗試使用替代方法
+        alternative_data = get_tx_futures_data_alternative(date, taiex_close)
+        if alternative_data and alternative_data.get('close', 0) > 0:
+            return alternative_data
+        return default_tx_data(taiex_close)
+
+def get_tx_futures_data_alternative(date, taiex_close=0):
+    """
+    使用替代方法獲取台指期貨數據
+    
+    Args:
+        date: 日期字符串，格式為YYYYMMDD
+        taiex_close: 加權指數收盤價
+    
+    Returns:
+        dict: 台指期貨數據
+    """
+    try:
+        # 使用 JSON API
+        year = date[:4]
+        month = date[4:6]
+        day = date[6:8]
+        
+        url = f"https://www.taifex.com.tw/cht/app/chartQuote?weight=0&up_resolution=5&rowcount=1&type=1&commodity_id=TX&contract_date=&datemode=0&queryStartDate={year}/{month}/{day}&queryEndDate={year}/{month}/{day}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://www.taifex.com.tw/cht/3/futDailyMarketReport'
+        }
+        
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        if len(data) > 0:
+            last_data = data[-1]
+            close_price = safe_float(last_data.get('Close', 0))
+            
+            # 計算漲跌和漲跌百分比
+            yesterday_close = safe_float(last_data.get('ClosePrevious', 0))
+            change_value = close_price - yesterday_close
+            change_percent = (change_value / yesterday_close * 100) if yesterday_close > 0 else 0.0
+            
+            # 尋找合約月
+            contract_month = last_data.get('ContractName', '')
+            if contract_month:
+                match = re.search(r'TX(\d+)', contract_month)
+                if match:
+                    contract_month = match.group(1)
+            
+            logger.info(f"替代方法獲取台指期貨: 收盤價={close_price}, 漲跌={change_value}, 漲跌%={change_percent}")
+            
+            return {
+                'close': close_price,
+                'change': change_value,
+                'change_percent': change_percent,
+                'taiex_close': taiex_close,
+                'contract_month': contract_month
+            }
+        else:
+            logger.error("替代方法獲取台指期貨數據失敗：資料為空")
+            return default_tx_data(taiex_close)
+    
+    except Exception as e:
+        logger.error(f"使用替代方法獲取台指期貨數據時出錯: {str(e)}")
         return default_tx_data(taiex_close)
 
 def get_institutional_futures_data(date):
@@ -175,7 +266,10 @@ def get_institutional_futures_data(date):
         url = "https://www.taifex.com.tw/cht/3/futContractsDate"
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://www.taifex.com.tw/cht/3/futContractsDate'
         }
         
         # 使用POST方法，提供查詢參數
@@ -235,10 +329,107 @@ def get_institutional_futures_data(date):
         
         logger.info(f"三大法人期貨數據: 外資台指={result['foreign_tx']}, 外資小台={result['foreign_mtx']}")
         
+        # 檢查是否返回全零數據，如果是則可能數據抓取失敗
+        if all(value == 0 for key, value in result.items() if key != 'date'):
+            logger.warning("三大法人期貨抓取全部為零，可能數據抓取失敗")
+        
         return result
     
     except Exception as e:
         logger.error(f"獲取三大法人期貨部位數據時出錯: {str(e)}")
+        return default_institutional_data()
+
+def get_institutional_futures_alternative(date):
+    """
+    使用替代方法獲取三大法人期貨部位數據
+    
+    Args:
+        date: 日期字符串，格式為YYYYMMDD
+        
+    Returns:
+        dict: 三大法人期貨部位數據
+    """
+    try:
+        # 使用API格式抓取數據
+        url = f"https://www.taifex.com.tw/cht/3/futContractsDateAsync?queryType=1&goDay=&doQuery=1&dateaddcnt=&queryDate={date[:4]}/{date[4:6]}/{date[6:]}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://www.taifex.com.tw/cht/3/futContractsDate'
+        }
+        
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # 默認結果
+        result = default_institutional_data()
+        
+        # 解析JSON數據
+        for item in data.get('data', []):
+            # 檢查商品名稱
+            product_name = item.get('commodity_name', '')
+            
+            # 解析台指期貨數據
+            if '臺股期貨' in product_name:
+                for trader in item.get('traders', []):
+                    trader_type = trader.get('trader_type', '')
+                    
+                    # 外資部位
+                    if 'foreign' in trader_type.lower() or '外資' in trader_type:
+                        result['foreign_tx'] = safe_int(trader.get('position_buy_sell_diff', 0))
+            
+            # 解析小型台指期貨數據
+            elif '小型臺指期貨' in product_name:
+                for trader in item.get('traders', []):
+                    trader_type = trader.get('trader_type', '')
+                    
+                    # 外資部位
+                    if 'foreign' in trader_type.lower() or '外資' in trader_type:
+                        result['foreign_mtx'] = safe_int(trader.get('position_buy_sell_diff', 0))
+                        result['mtx_foreign_net'] = safe_int(trader.get('position_buy_sell_diff', 0))
+                    
+                    # 自營商部位
+                    elif 'dealer' in trader_type.lower() or '自營' in trader_type:
+                        result['mtx_dealer_net'] = safe_int(trader.get('position_buy_sell_diff', 0))
+                    
+                    # 投信部位
+                    elif 'investment' in trader_type.lower() or '投信' in trader_type:
+                        result['mtx_it_net'] = safe_int(trader.get('position_buy_sell_diff', 0))
+                
+                # 總未平倉量
+                result['mtx_oi'] = safe_int(item.get('total_open_interest', 0))
+            
+            # 解析微型台指期貨數據
+            elif '微型臺指期貨' in product_name:
+                for trader in item.get('traders', []):
+                    trader_type = trader.get('trader_type', '')
+                    
+                    # 外資部位
+                    if 'foreign' in trader_type.lower() or '外資' in trader_type:
+                        result['xmtx_foreign_net'] = safe_int(trader.get('position_buy_sell_diff', 0))
+                    
+                    # 自營商部位
+                    elif 'dealer' in trader_type.lower() or '自營' in trader_type:
+                        result['xmtx_dealer_net'] = safe_int(trader.get('position_buy_sell_diff', 0))
+                    
+                    # 投信部位
+                    elif 'investment' in trader_type.lower() or '投信' in trader_type:
+                        result['xmtx_it_net'] = safe_int(trader.get('position_buy_sell_diff', 0))
+                
+                # 總未平倉量
+                result['xmtx_oi'] = safe_int(item.get('total_open_interest', 0))
+        
+        logger.info(f"替代方法獲取三大法人期貨數據: 外資台指={result['foreign_tx']}, 外資小台={result['foreign_mtx']}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"使用替代方法獲取三大法人期貨部位數據時出錯: {str(e)}")
         return default_institutional_data()
 
 def extract_contract_data(rows, contract_name):
@@ -266,8 +457,10 @@ def extract_contract_data(rows, contract_name):
         for i, row in enumerate(rows):
             cells = row.find_all('td')
             if len(cells) >= 3:
+                cell_text = cells[0].text.strip()
+                
                 # 檢查是否找到目標合約
-                if contract_name in cells[0].text.strip():
+                if contract_name in cell_text:
                     contract_found = True
                     continue
                 
@@ -276,28 +469,48 @@ def extract_contract_data(rows, contract_name):
                     category = cells[1].text.strip()
                     
                     # 自營商
-                    if '自營商' in category and 'Dealer' in category:
+                    if ('自營商' in category and 'Dealer' in category) or ('自營' in category):
                         # 淨額= 買方-賣方
-                        buy_position = safe_int(cells[2].text.strip().replace(',', ''))
-                        sell_position = safe_int(cells[5].text.strip().replace(',', ''))
-                        net_position = safe_int(cells[8].text.strip().replace(',', ''))
-                        result['dealer_net'] = net_position
+                        try:
+                            buy_position = safe_int(cells[2].text.strip().replace(',', ''))
+                            sell_position = safe_int(cells[5].text.strip().replace(',', ''))
+                            net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                            # 如果計算出的淨部位與顯示的不一致，以顯示的為準
+                            if abs(buy_position - sell_position - net_position) > 5:
+                                net_position = buy_position - sell_position
+                            result['dealer_net'] = net_position
+                        except:
+                            # 嘗試直接獲取淨部位
+                            try:
+                                net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                                result['dealer_net'] = net_position
+                            except:
+                                pass
                     
                     # 投信
-                    elif '投信' in category and 'Investment Trust' in category:
-                        net_position = safe_int(cells[8].text.strip().replace(',', ''))
-                        result['investment_trust_net'] = net_position
+                    elif ('投信' in category and 'Investment Trust' in category) or ('投信' in category):
+                        try:
+                            net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                            result['investment_trust_net'] = net_position
+                        except:
+                            pass
                     
                     # 外資
-                    elif '外資' in category and 'Foreign Institutional' in category:
-                        net_position = safe_int(cells[8].text.strip().replace(',', ''))
-                        result['foreign_net'] = net_position
+                    elif ('外資' in category and 'Foreign Institutional' in category) or ('外資' in category):
+                        try:
+                            net_position = safe_int(cells[8].text.strip().replace(',', ''))
+                            result['foreign_net'] = net_position
+                        except:
+                            pass
                     
                     # 全市場
-                    elif '全市場' in category and 'Market' in category:
-                        total_oi = safe_int(cells[11].text.strip().replace(',', ''))
-                        result['total_oi'] = total_oi
-                        break  # 找到全市場數據後結束
+                    elif ('全市場' in category and 'Market' in category) or ('全部' in category):
+                        try:
+                            total_oi = safe_int(cells[11].text.strip().replace(',', ''))
+                            result['total_oi'] = total_oi
+                            break  # 找到全市場數據後結束
+                        except:
+                            pass
                 
                 # 如果找到下一個合約名稱，結束當前合約的解析
                 elif contract_found and contract_name != cells[0].text.strip() and cells[0].text.strip() != '':
